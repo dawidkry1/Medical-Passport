@@ -9,12 +9,26 @@ import json
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
 
+# --- CUSTOM CSS TO HIDE STREAMLIT UI ELEMENTS ---
+# This hides the burger menu, footer, deploy button, and the top toolbar
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            .stAppDeployButton {display:none;}
+            [data-testid="stToolbar"] {visibility: hidden !important;}
+            [data-testid="stDecoration"] {display:none;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
 # Secure connection to Supabase
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
-# GLOBAL MAPPING DATA
+# GLOBAL MAPPING DATA (INCLUDES POLAND, DUBAI, NIGERIA, ETC.)
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {
         "UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern",
@@ -64,7 +78,7 @@ class MedicalCV(FPDF):
         self.set_font('Arial', 'B', 16)
         self.cell(0, 10, 'Professional Medical Portfolio', 0, 1, 'C')
         self.set_font('Arial', 'I', 10)
-        self.cell(0, 8, 'Standardized Global Clinical Credential', 0, 1, 'C')
+        self.cell(0, 8, 'Verified Clinical Credential Document', 0, 1, 'C')
         self.ln(10)
 
     def section_header(self, title):
@@ -103,13 +117,13 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
     pdf.ln(5)
     pdf.section_header("Procedural Logbook Summary")
     pdf.set_font('Arial', 'B', 9)
-    pdf.cell(80, 8, "Procedure", 1); pdf.cell(60, 8, "Competency Level", 1); pdf.cell(30, 8, "Count", 1, 1)
+    pdf.cell(80, 8, "Procedure", 1); pdf.cell(60, 8, "Level", 1); pdf.cell(30, 8, "Count", 1, 1)
     pdf.set_font('Arial', '', 9)
     for p in procedures:
         pdf.cell(80, 8, str(p['procedure']), 1); pdf.cell(60, 8, str(p['level']), 1); pdf.cell(30, 8, str(p['count']), 1, 1)
 
     pdf.ln(10)
-    pdf.section_header("Academic Portfolio, Research & QIP")
+    pdf.section_header("Academic Portfolio & QIP")
     for pr in projects:
         pdf.set_font('Arial', 'B', 10)
         pdf.cell(0, 6, f"{pr['type']}: {pr['title']}", 0, 1)
@@ -120,7 +134,6 @@ def generate_pdf(email, profile, rotations, procedures, projects, selected_count
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 3. DATABASE UTILITIES ---
-# Initialize session state securely
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
@@ -148,7 +161,6 @@ def main_dashboard():
     procedures = fetch_user_data("procedures")
     projects = fetch_user_data("projects")
 
-    # Load preferences
     saved_countries = []
     if profile and profile[0].get('selected_countries'):
         saved_countries = profile[0]['selected_countries']
@@ -160,41 +172,39 @@ def main_dashboard():
     ])
 
     with tab1:
-        st.subheader("Global Standing Mapping")
+        st.subheader("Professional Seniority Mapping")
         current_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
         try:
             t_idx = list(EQUIVALENCY_MAP.keys()).index(current_tier)
         except: t_idx = 0
         
-        selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
-        
+        selected_tier = st.selectbox("Define Your Clinical Standing", list(EQUIVALENCY_MAP.keys()), index=t_idx)
         active_countries = st.multiselect(
-            "Which healthcare systems are relevant to you?",
+            "Target Healthcare Systems",
             options=list(COUNTRY_KEY_MAP.keys()),
             default=saved_countries if saved_countries else ["United Kingdom", "Poland"]
         )
 
         if active_countries:
-            st.write("### International Comparison Preview")
             t_data = EQUIVALENCY_MAP[selected_tier]
             cols = st.columns(3)
             for i, country in enumerate(active_countries):
                 key = COUNTRY_KEY_MAP[country]
                 cols[i % 3].metric(country, t_data[key])
         
-        if st.button("💾 Save Preferences"):
+        if st.button("💾 Save Settings"):
             client.table("profiles").upsert({
                 "user_email": st.session_state.user_email, 
                 "global_tier": selected_tier,
                 "selected_countries": active_countries
             }, on_conflict="user_email").execute()
-            st.success("Global Standing Locked."); st.rerun()
+            st.success("Global Standing Saved."); st.rerun()
 
     with tab2:
-        st.subheader("Clinical Experience Ledger")
+        st.subheader("Clinical Placements")
         if rotations: st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_rot", clear_on_submit=True):
-            h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Local Grade")
+            h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Grade")
             if st.form_submit_button("Add Placement"):
                 client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": g}).execute()
                 st.rerun()
@@ -204,68 +214,59 @@ def main_dashboard():
         if procedures: st.table(pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_proc", clear_on_submit=True):
             n, l, c = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent", "Assessor"]), st.number_input("Count", 1)
-            if st.form_submit_button("Log Skill"):
+            if st.form_submit_button("Log Procedure"):
                 client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": n, "level": l, "count": c}).execute()
                 st.rerun()
 
     with tab4:
-        st.subheader("Academic & QIP")
+        st.subheader("Academic Portfolio")
         if projects: st.table(pd.DataFrame(projects).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_proj", clear_on_submit=True):
             t = st.selectbox("Type", ["Audit", "Research", "QIP", "Teaching"])
             title, r, y = st.text_input("Title"), st.text_input("Role"), st.text_input("Year")
-            if st.form_submit_button("Sync"):
+            if st.form_submit_button("Log Project"):
                 client.table("projects").insert({"user_email": st.session_state.user_email, "type": t, "title": title, "role": r, "year": y}).execute()
                 st.rerun()
 
     with tab5:
-        st.subheader("🛡️ Verified Credential Vault")
-        st.info("Storage feature coming soon. Use this space for medical licenses.")
+        st.subheader("🛡️ Credential Vault")
+        st.info("Storage features are currently read-only. Secure document hosting enabled in next version.")
 
     with tab6:
-        st.subheader("Generate Targeted Clinical Portfolio")
-        export_countries = st.multiselect(
-            "Include in PDF Header:",
-            options=list(COUNTRY_KEY_MAP.keys()),
-            default=active_countries
-        )
-        if st.button("🏗️ Compile Professional CV"):
+        st.subheader("Compile Portfolio")
+        export_countries = st.multiselect("Include in PDF Header", options=list(COUNTRY_KEY_MAP.keys()), default=active_countries)
+        if st.button("🏗️ Generate Professional PDF"):
             try:
                 pdf_bytes = generate_pdf(st.session_state.user_email, profile, rotations, procedures, projects, export_countries)
-                st.download_button(label="⬇️ Download PDF CV", data=pdf_bytes, file_name="Medical_Passport_CV.pdf", mime="application/pdf")
+                st.download_button(label="⬇️ Download CV", data=pdf_bytes, file_name="Clinical_Passport.pdf", mime="application/pdf")
             except Exception as e: st.error(f"Error: {e}")
 
-# --- 5. AUTHENTICATION (FIXED BUGGY LOGIN) ---
+# --- 5. AUTHENTICATION (REFACTORED FOR NO-FAIL LOGIN) ---
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
+    e = st.text_input("Email")
+    p = st.text_input("Password", type="password")
     
-    with st.container():
-        e = st.text_input("Email", placeholder="doctor@hospital.com")
-        p = st.text_input("Password", type="password")
-        
-        col1, col2 = st.columns(2)
-        
-        if col1.button("Sign In", use_container_width=True):
-            try:
-                # Direct attempt
-                res = client.auth.sign_in_with_password({"email": e, "password": p})
-                if res.user:
-                    st.session_state.authenticated = True
-                    st.session_state.user_email = e
-                    st.success("Authenticated! Loading dashboard...")
-                    time.sleep(0.5) # Brief pause for state to settle
-                    st.rerun()
-            except Exception as ex:
-                st.error("Login failed. Please check your credentials.")
+    col1, col2 = st.columns(2)
+    if col1.button("Login", use_container_width=True):
+        try:
+            res = client.auth.sign_in_with_password({"email": e, "password": p})
+            if res.user:
+                st.session_state.authenticated = True
+                st.session_state.user_email = e
+                st.success("Access Granted. Syncing...")
+                time.sleep(0.5) 
+                st.rerun()
+        except:
+            st.error("Credential verification failed.")
 
-        if col2.button("Register New Account", use_container_width=True):
-            try:
-                client.auth.sign_up({"email": e, "password": p})
-                st.info("Registration email sent! Please check your inbox.")
-            except:
-                st.error("Registration failed. Email might already be in use.")
+    if col2.button("Register", use_container_width=True):
+        try:
+            client.auth.sign_up({"email": e, "password": p})
+            st.info("Check inbox for verification link.")
+        except:
+            st.error("Account creation failed.")
 
-# Main entry point
 if st.session_state.authenticated:
     main_dashboard()
 else:

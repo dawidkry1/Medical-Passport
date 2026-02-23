@@ -28,7 +28,7 @@ URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
-# GLOBAL MAPPING DATA
+# GLOBAL MAPPING DATA (UK, US, Australia, Ireland, Canada, Dubai, India/Pakistan, Nigeria, China/S.Korea, Europe, Poland)
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {
         "UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern",
@@ -163,6 +163,7 @@ def main_dashboard():
     procedures = fetch_user_data("procedures")
     projects = fetch_user_data("projects")
 
+    # Load preferences
     saved_countries = []
     if profile and profile[0].get('selected_countries'):
         saved_countries = profile[0]['selected_countries']
@@ -232,7 +233,7 @@ def main_dashboard():
 
     with tab5:
         st.subheader("🛡️ Credential Vault")
-        st.info("Storage features are currently read-only.")
+        st.info("Document upload is currently in development.")
 
     with tab6:
         st.subheader("Compile Portfolio")
@@ -243,35 +244,48 @@ def main_dashboard():
                 st.download_button(label="⬇️ Download CV", data=pdf_bytes, file_name="Clinical_Passport.pdf", mime="application/pdf")
             except Exception as e: st.error(f"Error: {e}")
 
-# --- 5. AUTHENTICATION (FIXED LOGIC) ---
+# --- 5. AUTHENTICATION (NO-RACE CONDITION VERSION) ---
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
-    e = st.text_input("Email", key="login_email")
-    p = st.text_input("Password", type="password", key="login_pass")
-    
-    col1, col2 = st.columns(2)
-    
-    if col1.button("Login", use_container_width=True):
-        try:
-            res = client.auth.sign_in_with_password({"email": e, "password": p})
-            if res.user:
-                st.session_state.authenticated = True
-                st.session_state.user_email = e
-                st.rerun()
-                return # CRITICAL: Stop execution here
-        except:
-            # This only runs if the try block fails
-            st.error("Credential verification failed.")
-            return
+    # Using container for better visual grouping
+    with st.container():
+        e = st.text_input("Email", key="auth_email")
+        p = st.text_input("Password", type="password", key="auth_pass")
+        
+        col1, col2 = st.columns(2)
+        
+        if col1.button("Login", use_container_width=True):
+            if not e or not p:
+                st.warning("Please enter both email and password.")
+                return
 
-    if col2.button("Register", use_container_width=True):
-        try:
-            client.auth.sign_up({"email": e, "password": p})
-            st.info("Check inbox for verification link.")
-        except:
-            st.error("Account creation failed.")
+            try:
+                # 1. Attempt the handshake
+                res = client.auth.sign_in_with_password({"email": e, "password": p})
+                
+                # 2. Check for user existence in response
+                if res.user:
+                    # 3. SET STATE BEFORE ANYTHING ELSE
+                    st.session_state.authenticated = True
+                    st.session_state.user_email = e
+                    # 4. Show success and force a hard refresh
+                    st.success("Authentication Successful! Syncing profile...")
+                    time.sleep(0.4)
+                    st.rerun()
+                else:
+                    st.error("Credential verification failed.")
+            except Exception as ex:
+                # Specifically catch the error so it doesn't stay on screen on next click
+                st.error(f"Login attempt failed. Please try again.")
 
-# RUN LOGIC
+        if col2.button("Register", use_container_width=True):
+            try:
+                client.auth.sign_up({"email": e, "password": p})
+                st.info("Verification email sent! Check your inbox.")
+            except:
+                st.error("Registration failed. Email might already be in use.")
+
+# --- 6. EXECUTION FLOW ---
 if st.session_state.authenticated:
     main_dashboard()
 else:

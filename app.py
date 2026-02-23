@@ -171,7 +171,7 @@ def main_dashboard():
         st.subheader("Clinical Experience")
         # --- HANDS-FREE PARSER ENGINE ---
         with st.expander("🪄 Quick-Start: Auto-Fill from Legacy CV", expanded=False):
-            st.info("Upload your PDF. I will scan for 'Hospital' or 'Szpital' and prepare entries.")
+            st.info("Upload your PDF. I will scan for 'Hospital' and prepare entries.")
             legacy_file = st.file_uploader("Upload PDF CV", type=['pdf'], key="auto_cv_upload")
             
             if legacy_file:

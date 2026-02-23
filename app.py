@@ -18,7 +18,6 @@ hide_st_style = """
             .stAppDeployButton {display:none;}
             [data-testid="stToolbar"] {visibility: hidden !important;}
             [data-testid="stDecoration"] {display:none;}
-            /* Custom styling for the logout button to keep it clean */
             .stButton>button {border-radius: 5px;}
             </style>
             """
@@ -148,13 +147,12 @@ def fetch_user_data(table_name):
 
 # --- 4. THE PASSPORT DASHBOARD ---
 def main_dashboard():
-    # TOP HEADER NAVIGATION (REPLACES SIDEBAR LOGOUT)
-    head_col1, head_col2 = st.columns([0.85, 0.15])
+    head_col1, head_col2 = st.columns([0.80, 0.20])
     with head_col1:
         st.title("🩺 Global Medical Passport")
-        st.caption(f"Logged in as: {st.session_state.user_email}")
+        st.caption(f"Physician Session: {st.session_state.user_email}")
     with head_col2:
-        st.write("##") # Alignment
+        st.write("##")
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.session_state.user_email = ""
@@ -165,7 +163,6 @@ def main_dashboard():
     procedures = fetch_user_data("procedures")
     projects = fetch_user_data("projects")
 
-    # Load preferences
     saved_countries = []
     if profile and profile[0].get('selected_countries'):
         saved_countries = profile[0]['selected_countries']
@@ -235,7 +232,7 @@ def main_dashboard():
 
     with tab5:
         st.subheader("🛡️ Credential Vault")
-        st.info("Document upload is currently in development. Ensure your licenses are ready for the next update.")
+        st.info("Storage features are currently read-only.")
 
     with tab6:
         st.subheader("Compile Portfolio")
@@ -246,24 +243,26 @@ def main_dashboard():
                 st.download_button(label="⬇️ Download CV", data=pdf_bytes, file_name="Clinical_Passport.pdf", mime="application/pdf")
             except Exception as e: st.error(f"Error: {e}")
 
-# --- 5. AUTHENTICATION ---
+# --- 5. AUTHENTICATION (FIXED LOGIC) ---
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
-    e = st.text_input("Email")
-    p = st.text_input("Password", type="password")
+    e = st.text_input("Email", key="login_email")
+    p = st.text_input("Password", type="password", key="login_pass")
     
     col1, col2 = st.columns(2)
+    
     if col1.button("Login", use_container_width=True):
         try:
             res = client.auth.sign_in_with_password({"email": e, "password": p})
             if res.user:
                 st.session_state.authenticated = True
                 st.session_state.user_email = e
-                st.success("Access Granted.")
-                time.sleep(0.5) 
                 st.rerun()
+                return # CRITICAL: Stop execution here
         except:
+            # This only runs if the try block fails
             st.error("Credential verification failed.")
+            return
 
     if col2.button("Register", use_container_width=True):
         try:
@@ -272,6 +271,7 @@ def login_screen():
         except:
             st.error("Account creation failed.")
 
+# RUN LOGIC
 if st.session_state.authenticated:
     main_dashboard()
 else:

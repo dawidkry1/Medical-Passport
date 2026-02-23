@@ -2,107 +2,228 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 from fpdf import FPDF
+import pdfplumber
 import json
-import pdfplumber  # Required for the new Import function
-import re
+import io
 
-# --- 1. CONFIG & AUTH ---
+# --- 1. CORE CONFIG & STYLING ---
 st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
 
-# (CSS and Supabase Setup remains the same)
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            .stAppDeployButton {display:none;}
+            [data-testid="stToolbar"] {visibility: hidden !important;}
+            [data-testid="stDecoration"] {display:none;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
+# Secure connection to Supabase
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
+# --- 2. GLOBAL MAPPING DATA ---
 EQUIVALENCY_MAP = {
-    "Tier 1: Junior (Intern/FY1)": {"UK": "Foundation Year 1", "Poland": "Lekarz stażysta", "Responsibilities": "Ward based, supervised prescribing."},
-    "Tier 2: Intermediate (SHO/Resident)": {"UK": "FY2 / Core Trainee", "Poland": "Lekarz rezydent (Junior)", "Responsibilities": "Acute assessments, core specialty."},
-    "Tier 3: Senior (Registrar/Fellow)": {"UK": "ST3+ / Registrar", "Poland": "Lekarz rezydent (Senior)", "Responsibilities": "Team leadership, specialty decision making."},
-    "Tier 4: Expert (Consultant/Attending)": {"UK": "Consultant / SAS", "Poland": "Lekarz specjalista", "Responsibilities": "Final clinical accountability."}
+    "Tier 1: Junior (Intern/FY1)": {
+        "UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern",
+        "Ireland": "Intern", "Canada": "PGY-1", "Dubai/DHA": "Intern",
+        "India/Pakistan": "House Officer / Intern", "Nigeria": "House Officer",
+        "China/S.Korea": "Junior Resident", "Europe": "Junior Doctor",
+        "Poland": "Lekarz stażysta",
+        "Responsibilities": "Ward based, supervised prescribing, basic clinical procedures."
+    },
+    "Tier 2: Intermediate (SHO/Resident)": {
+        "UK": "FY2 / Core Trainee", "US": "PGY-2/3 (Resident)", "Australia": "Resident / RMO",
+        "Ireland": "SHO", "Canada": "Junior Resident", "Dubai/DHA": "GP / Resident",
+        "India/Pakistan": "PG Resident / Medical Officer", "Nigeria": "Registrar",
+        "China/S.Korea": "Resident", "Europe": "Resident Physician",
+        "Poland": "Lekarz rezydent (Junior)",
+        "Responsibilities": "Acute assessments, procedural proficiency, core specialty rotations."
+    },
+    "Tier 3: Senior (Registrar/Fellow)": {
+        "UK": "ST3+ / Registrar", "US": "Chief Resident / Fellow", "Australia": "Registrar",
+        "Ireland": "Specialist Registrar (SpR)", "Canada": "Senior Resident / Fellow", "Dubai/DHA": "Specialist (P)",
+        "India/Pakistan": "Senior Resident / Registrar", "Nigeria": "Senior Registrar",
+        "China/S.Korea": "Attending Physician / Fellow", "Europe": "Specialist Trainee / Senior Registrar",
+        "Poland": "Lekarz rezydent (Senior)",
+        "Responsibilities": "Team leadership, specialty decision making, independent in core procedures."
+    },
+    "Tier 4: Expert (Consultant/Attending)": {
+        "UK": "Consultant / SAS", "US": "Attending Physician", "Australia": "Consultant / Specialist",
+        "Ireland": "Consultant", "Canada": "Staff Specialist", "Dubai/DHA": "Consultant",
+        "India/Pakistan": "Consultant / Asst. Professor", "Nigeria": "Consultant",
+        "China/S.Korea": "Chief Physician", "Europe": "Specialist / Consultant",
+        "Poland": "Lekarz specjalista",
+        "Responsibilities": "Final clinical accountability, service leadership, senior training."
+    }
 }
 
-COUNTRY_KEY_MAP = {"United Kingdom": "UK", "Poland": "Poland", "United States": "US", "Australia": "Australia"}
+COUNTRY_KEY_MAP = {
+    "United Kingdom": "UK", "United States": "US", "Australia": "Australia",
+    "Ireland": "Ireland", "Canada": "Canada", "Dubai (DHA)": "Dubai/DHA",
+    "India & Pakistan": "India/Pakistan", "Nigeria": "Nigeria",
+    "China & S.Korea": "China/S.Korea", "Europe (General)": "Europe",
+    "Poland": "Poland"
+}
 
-# --- 2. NEW: MEDICAL CV PARSER LOGIC ---
-def simple_medical_parser(text):
-    """A basic heuristic parser to find clinical rotations in raw text."""
-    rotations = []
-    # Look for common patterns like "Hospital", "Ward", "Department"
-    lines = text.split('\n')
-    for line in lines:
-        if any(key in line.lower() for key in ["hospital", "clinic", "centre", "szpital"]):
-            rotations.append({"hospital": line.strip(), "specialty": "Detected from CV", "dates": "Check CV", "grade": "Check CV"})
-    return rotations
+# --- 3. SESSION & AUTHENTICATION ---
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
 
-# --- 3. MAIN DASHBOARD ---
-if 'authenticated' not in st.session_state: st.session_state.authenticated = False
+def handle_login():
+    email = st.session_state.login_email
+    password = st.session_state.login_password
+    try:
+        res = client.auth.sign_in_with_password({"email": email, "password": password})
+        if res.user:
+            st.session_state.authenticated = True
+            st.session_state.user_email = email
+    except:
+        st.error("Authentication failed.")
 
-def main_dashboard():
-    # Header logic...
-    st.title("🩺 Global Medical Passport")
-    
-    # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["🌐 Equivalency", "🏥 Rotations & Import", "🛡️ Vault", "📄 Export CV"])
-
-    with tab1:
-        st.subheader("Global Standing Mapping")
-        # (Equivalency logic from previous version)
-
-    with tab2:
-        st.subheader("Clinical Experience")
-        
-        # --- THE NEW IMPORT FUNCTION ---
-        with st.expander("🪄 Quick-Start: Import from Legacy CV"):
-            st.info("Upload your old PDF CV. We will attempt to identify your hospitals and placements.")
-            legacy_file = st.file_uploader("Choose PDF CV", type=['pdf'])
-            if legacy_file:
-                with pdfplumber.open(legacy_file) as pdf:
-                    raw_text = "".join([page.extract_text() for page in pdf.pages])
-                
-                extracted_data = simple_medical_parser(raw_text)
-                
-                if extracted_data:
-                    st.write("🔍 **Potential Placements Found:**")
-                    for i, item in enumerate(extracted_data[:5]): # Show first 5 matches
-                        col1, col2, col3 = st.columns(3)
-                        h = col1.text_input(f"Hospital {i}", value=item['hospital'], key=f"h_{i}")
-                        s = col2.text_input(f"Specialty {i}", value="General Medicine", key=f"s_{i}")
-                        if col3.button(f"Add #{i}"):
-                            client.table("rotations").insert({
-                                "user_email": st.session_state.user_email,
-                                "hospital": h, "specialty": s, "dates": "Imported", "grade": "Imported"
-                            }).execute()
-                            st.toast(f"Added {h}!")
-                else:
-                    st.warning("We found text, but no clear hospital names. You can copy-paste from below:")
-                    st.text_area("Raw CV Text", raw_text, height=150)
-
-        st.divider()
-        # (Standard Rotations Table & Form)
-        # ... [Rotations display and manual add form] ...
-
-    with tab3:
-        st.subheader("🛡️ Credential Vault")
-        # (Vault logic from previous version)
-
-    with tab4:
-        st.subheader("Generate Portfolio")
-        # (Export logic from previous version)
-
-# --- AUTHENTICATION (Form-based for 'Enter' key) ---
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
     with st.form("login_form"):
-        e = st.text_input("Email")
-        p = st.text_input("Password", type="password")
-        if st.form_submit_button("Sign In", use_container_width=True):
-            try:
-                res = client.auth.sign_in_with_password({"email": e, "password": p})
-                if res.user:
-                    st.session_state.authenticated = True
-                    st.session_state.user_email = e
-                    st.rerun()
-            except: st.error("Login failed.")
+        st.text_input("Email", key="login_email")
+        st.text_input("Password", type="password", key="login_password")
+        st.form_submit_button("Sign In", on_click=handle_login, use_container_width=True)
 
+# --- 4. DATA UTILITIES ---
+def fetch_user_data(table_name):
+    try:
+        res = client.table(table_name).select("*").eq("user_email", st.session_state.user_email).execute()
+        return res.data
+    except: return []
+
+class MedicalCV(FPDF):
+    def header(self):
+        self.set_font('Arial', 'B', 16)
+        self.cell(0, 10, 'Professional Medical Portfolio', 0, 1, 'C')
+        self.set_font('Arial', 'I', 10)
+        self.cell(0, 8, 'Standardized Global Clinical Credential', 0, 1, 'C')
+        self.ln(10)
+    def section_header(self, title):
+        self.set_font('Arial', 'B', 12)
+        self.set_fill_color(240, 240, 240)
+        self.cell(0, 10, f" {title}", 0, 1, 'L', fill=True)
+        self.ln(3)
+
+def generate_pdf(email, profile, rotations, procedures, projects, countries):
+    pdf = MedicalCV()
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, f"Physician: {email}", 0, 1)
+    
+    tier_key = profile[0]['global_tier'] if profile else None
+    if tier_key in EQUIVALENCY_MAP:
+        data = EQUIVALENCY_MAP[tier_key]
+        pdf.section_header("Professional Standing & International Equivalency")
+        pdf.set_font('Arial', 'B', 10)
+        for c in countries:
+            key = COUNTRY_KEY_MAP.get(c)
+            if key: pdf.cell(0, 7, f"{c} Equivalent: {data[key]}", 0, 1)
+        pdf.ln(5)
+
+    pdf.section_header("Clinical Experience")
+    for r in rotations:
+        pdf.set_font('Arial', 'B', 10)
+        pdf.cell(0, 6, f"{r['hospital']} - {r['specialty']}", 0, 1)
+        pdf.set_font('Arial', '', 10)
+        pdf.cell(0, 6, f"{r['grade']} | {r['dates']}", 0, 1)
+        pdf.ln(2)
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- 5. MAIN DASHBOARD ---
+def main_dashboard():
+    # Header
+    col1, col2 = st.columns([0.8, 0.2])
+    col1.title("🩺 Global Medical Passport")
+    if col2.button("Logout"):
+        st.session_state.authenticated = False
+        st.rerun()
+
+    profile = fetch_user_data("profiles")
+    rotations = fetch_user_data("rotations")
+    procedures = fetch_user_data("procedures")
+    projects = fetch_user_data("projects")
+
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Rotations", "💉 Procedures", "🔬 Academic", "🛡️ Vault", "📄 Export"])
+
+    with tabs[0]:
+        st.subheader("Global Standing Mapping")
+        current_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
+        try: t_idx = list(EQUIVALENCY_MAP.keys()).index(current_tier)
+        except: t_idx = 0
+        
+        tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
+        saved_c = json.loads(profile[0]['selected_countries']) if profile and profile[0].get('selected_countries') else ["United Kingdom", "Poland"]
+        active_c = st.multiselect("Relevant Healthcare Systems", options=list(COUNTRY_KEY_MAP.keys()), default=saved_c)
+
+        if st.button("💾 Save Preferences"):
+            client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": tier, "selected_countries": json.dumps(active_c)}, on_conflict="user_email").execute()
+            st.success("Saved!")
+
+    with tabs[1]:
+        st.subheader("Clinical Experience")
+        with st.expander("🪄 Quick-Start: Import from Legacy CV"):
+            legacy_file = st.file_uploader("Upload PDF CV", type=['pdf'])
+            if legacy_file:
+                with pdfplumber.open(legacy_file) as pdf:
+                    text = "".join([p.extract_text() for p in pdf.pages])
+                st.text_area("Extracted Text (Copy useful bits)", text, height=150)
+
+        if rotations: st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
+        with st.form("add_rot", clear_on_submit=True):
+            h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Grade")
+            if st.form_submit_button("Add Rotation"):
+                client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": g}).execute()
+                st.rerun()
+
+    with tabs[2]:
+        st.subheader("Procedural Log")
+        if procedures: st.table(pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore'))
+        with st.form("add_proc", clear_on_submit=True):
+            n, l, c = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent", "Assessor"]), st.number_input("Count", 1)
+            if st.form_submit_button("Log Skill"):
+                client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": n, "level": l, "count": c}).execute()
+                st.rerun()
+
+    with tabs[3]:
+        st.subheader("Academic & QIP")
+        if projects: st.table(pd.DataFrame(projects).drop(columns=['id', 'user_email'], errors='ignore'))
+        with st.form("add_proj", clear_on_submit=True):
+            t = st.selectbox("Type", ["Audit", "Research", "QIP", "Teaching"])
+            title, r, y = st.text_input("Title"), st.text_input("Role"), st.text_input("Year")
+            if st.form_submit_button("Add Project"):
+                client.table("projects").insert({"user_email": st.session_state.user_email, "type": t, "title": title, "role": r, "year": y}).execute()
+                st.rerun()
+
+    with tabs[4]:
+        st.subheader("🛡️ Verified Vault")
+        up = st.file_uploader("Upload Credentials", type=['pdf', 'jpg', 'png'])
+        if up and st.button("📤 Vault File"):
+            path = f"{st.session_state.user_email}/{up.name}"
+            client.storage.from_('medical-vault').upload(path, up.getvalue())
+            st.success("Uploaded!")
+        
+        files = client.storage.from_('medical-vault').list(st.session_state.user_email)
+        for f in files:
+            c1, c2 = st.columns([0.8, 0.2])
+            c1.write(f"📄 {f['name']}")
+            res = client.storage.from_('medical-vault').create_signed_url(f"{st.session_state.user_email}/{f['name']}", 60)
+            c2.link_button("View", res['signedURL'])
+
+    with tabs[5]:
+        st.subheader("Generate Professional CV")
+        exp_c = st.multiselect("Choose comparison countries:", options=list(COUNTRY_KEY_MAP.keys()), default=active_c)
+        if st.button("🏗️ Compile CV"):
+            pdf_bytes = generate_pdf(st.session_state.user_email, profile, rotations, procedures, projects, exp_c)
+            st.download_button("⬇️ Download PDF", pdf_bytes, "Medical_Passport.pdf", "application/pdf")
+
+# --- EXECUTION ---
 if st.session_state.authenticated: main_dashboard()
 else: login_screen()

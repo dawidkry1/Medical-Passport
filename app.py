@@ -169,13 +169,32 @@ def main_dashboard():
 
     with tabs[1]:
         st.subheader("Clinical Experience")
-        with st.expander("🪄 Quick-Start: Import from Legacy CV"):
-            legacy_file = st.file_uploader("Upload PDF CV", type=['pdf'])
+        # --- HANDS-FREE PARSER ENGINE ---
+        with st.expander("🪄 Quick-Start: Auto-Fill from Legacy CV", expanded=False):
+            st.info("Upload your PDF. I will scan for 'Hospital' or 'Szpital' and prepare entries.")
+            legacy_file = st.file_uploader("Upload PDF CV", type=['pdf'], key="auto_cv_upload")
+            
             if legacy_file:
                 with pdfplumber.open(legacy_file) as pdf:
-                    text = "".join([p.extract_text() for p in pdf.pages])
-                st.text_area("Extracted Text (Copy useful bits)", text, height=150)
+                    full_text = "".join([p.extract_text() for p in pdf.pages])
+                
+                hospital_keywords = ["hospital", "szpital", "clinic", "klinika", "medical centre", "ward", "oddział"]
+                lines = full_text.split('\n')
+                found_placements = [line.strip() for line in lines if any(k in line.lower() for k in hospital_keywords)]
 
+                if found_placements:
+                    st.write("### 🤖 Potential Rotations Identified:")
+                    for i, place in enumerate(found_placements[:8]): # Limit to first 8 matches for speed
+                        c1, c2, c3 = st.columns([2, 1, 1])
+                        h_name = c1.text_input("Hospital", value=place, key=f"auto_h_{i}")
+                        h_spec = c2.text_input("Specialty", value="Verify...", key=f"auto_s_{i}")
+                        if c3.button("✅ Add", key=f"btn_add_{i}"):
+                            client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h_name, "specialty": h_spec, "dates": "Imported", "grade": "Imported"}).execute()
+                            st.toast(f"Added {h_name}")
+                else:
+                    st.warning("No clear hospital entries found. Try a different CV or manual entry.")
+
+        st.divider()
         if rotations: st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("add_rot", clear_on_submit=True):
             h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Grade")

@@ -10,7 +10,6 @@ import json
 st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
 
 # --- CUSTOM CSS TO HIDE STREAMLIT UI ELEMENTS ---
-# This hides the burger menu, footer, deploy button, and the top toolbar
 hide_st_style = """
             <style>
             #MainMenu {visibility: hidden;}
@@ -19,6 +18,8 @@ hide_st_style = """
             .stAppDeployButton {display:none;}
             [data-testid="stToolbar"] {visibility: hidden !important;}
             [data-testid="stDecoration"] {display:none;}
+            /* Custom styling for the logout button to keep it clean */
+            .stButton>button {border-radius: 5px;}
             </style>
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
@@ -28,7 +29,7 @@ URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]
 client = create_client(URL, KEY)
 
-# GLOBAL MAPPING DATA (INCLUDES POLAND, DUBAI, NIGERIA, ETC.)
+# GLOBAL MAPPING DATA
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {
         "UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern",
@@ -147,20 +148,24 @@ def fetch_user_data(table_name):
 
 # --- 4. THE PASSPORT DASHBOARD ---
 def main_dashboard():
-    st.sidebar.title("🏥 Clinical Session")
-    st.sidebar.write(f"Physician: {st.session_state.user_email}")
-    if st.sidebar.button("Log Out"):
-        st.session_state.authenticated = False
-        st.session_state.user_email = ""
-        st.rerun()
+    # TOP HEADER NAVIGATION (REPLACES SIDEBAR LOGOUT)
+    head_col1, head_col2 = st.columns([0.85, 0.15])
+    with head_col1:
+        st.title("🩺 Global Medical Passport")
+        st.caption(f"Logged in as: {st.session_state.user_email}")
+    with head_col2:
+        st.write("##") # Alignment
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.user_email = ""
+            st.rerun()
 
-    st.title("🩺 Global Medical Passport")
-    
     profile = fetch_user_data("profiles")
     rotations = fetch_user_data("rotations")
     procedures = fetch_user_data("procedures")
     projects = fetch_user_data("projects")
 
+    # Load preferences
     saved_countries = []
     if profile and profile[0].get('selected_countries'):
         saved_countries = profile[0]['selected_countries']
@@ -230,7 +235,7 @@ def main_dashboard():
 
     with tab5:
         st.subheader("🛡️ Credential Vault")
-        st.info("Storage features are currently read-only. Secure document hosting enabled in next version.")
+        st.info("Document upload is currently in development. Ensure your licenses are ready for the next update.")
 
     with tab6:
         st.subheader("Compile Portfolio")
@@ -241,7 +246,7 @@ def main_dashboard():
                 st.download_button(label="⬇️ Download CV", data=pdf_bytes, file_name="Clinical_Passport.pdf", mime="application/pdf")
             except Exception as e: st.error(f"Error: {e}")
 
-# --- 5. AUTHENTICATION (REFACTORED FOR NO-FAIL LOGIN) ---
+# --- 5. AUTHENTICATION ---
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
     e = st.text_input("Email")
@@ -254,7 +259,7 @@ def login_screen():
             if res.user:
                 st.session_state.authenticated = True
                 st.session_state.user_email = e
-                st.success("Access Granted. Syncing...")
+                st.success("Access Granted.")
                 time.sleep(0.5) 
                 st.rerun()
         except:

@@ -4,7 +4,7 @@ import pandas as pd
 from supabase import create_client, Client
 
 # --- 1. CORE CONFIGURATION ---
-st.set_page_config(page_title="Medical Passport", page_icon="", layout="wide")
+st.set_page_config(page_title="Medical Passport", page_icon="🏥", layout="wide")
 
 # Secure connection to Supabase
 URL = st.secrets["SUPABASE_URL"]
@@ -63,10 +63,10 @@ def main_dashboard():
     # --- TAB 1: EQUIVALENCY ---
     with tab1:
         st.subheader("Global Seniority Mapping")
-        st.info("Mapping your local seniority to international standards ensures your CV is interpreted correctly by overseas boards.")
+        st.info("Mapping your local seniority to international standards ensures your CV is interpreted correctly.")
         
-        current_profile = fetch_user_data("profiles")
-        current_tier_val = current_profile[0]['global_tier'] if current_profile else list(EQUIVALENCY_MAP.keys())[0]
+        profile_data = fetch_user_data("profiles")
+        current_tier_val = profile_data[0]['global_tier'] if profile_data else list(EQUIVALENCY_MAP.keys())[0]
         
         tier_idx = list(EQUIVALENCY_MAP.keys()).index(current_tier_val) if current_tier_val in EQUIVALENCY_MAP else 0
         selected_tier = st.selectbox("Current Global Equivalent", list(EQUIVALENCY_MAP.keys()), index=tier_idx)
@@ -79,7 +79,6 @@ def main_dashboard():
         
         if st.button("💾 Lock Equivalency to Passport"):
             try:
-                # Standard Upsert
                 client.table("profiles").upsert({
                     "user_email": st.session_state.user_email, 
                     "global_tier": selected_tier
@@ -87,7 +86,7 @@ def main_dashboard():
                 st.success("Global Mapping Updated!")
                 st.rerun()
             except Exception as e:
-                st.error(f"Postgrest Error: {e}")
+                st.error(f"Error: {e}")
 
     # --- TAB 2: ROTATIONS ---
     with tab2:
@@ -101,7 +100,7 @@ def main_dashboard():
                 c1, c2 = st.columns(2)
                 h, s = c1.text_input("Hospital"), c2.selectbox("Specialty", ["General Medicine", "Surgery", "ICU", "A&E", "Pediatrics", "OBGYN", "GP", "Psychiatry"])
                 d, r = st.columns(2)
-                dates, grade = d.text_input("Dates (e.g. 2024-2025)"), r.text_input("Local Grade")
+                dates, grade = d.text_input("Dates"), r.text_input("Local Grade")
                 if st.form_submit_button("Sync to Cloud"):
                     client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": dates, "grade": grade}).execute()
                     st.rerun()
@@ -113,11 +112,12 @@ def main_dashboard():
         if procs:
             df_p = pd.DataFrame(procs).drop(columns=['id', 'user_email'], errors='ignore')
             st.dataframe(df_p, use_container_width=True)
-            st.area_chart(df_p.set_index('procedure')['count'])
+            # Visualization for fellow doctors
+            st.bar_chart(df_p.set_index('procedure')['count'])
 
         with st.form("new_procedure"):
             p1, p2, p3 = st.columns([2, 2, 1])
-            p_name = p1.text_input("Procedure")
+            p_name = p1.text_input("Procedure Name")
             p_level = p2.select_slider("Independence", options=["Observed", "Supervised", "Independent", "Assessor"])
             p_count = p3.number_input("Lifetime Count", min_value=1)
             if st.form_submit_button("Log Skill"):
@@ -143,7 +143,7 @@ def main_dashboard():
     # --- TAB 5: DOCUMENT VAULT ---
     with tab5:
         st.subheader("🛡️ Verified Credential Vault")
-        uploaded_file = st.file_uploader("Upload Medical Degree / License", type=["pdf", "jpg", "png"])
+        uploaded_file = st.file_uploader("Upload Degree / License", type=["pdf", "jpg", "png"])
         if uploaded_file and st.button("🚀 Push to Secure Vault"):
             safe_email = st.session_state.user_email.replace("@", "_").replace(".", "_")
             client.storage.from_("credentials").upload(f"{safe_email}/{uploaded_file.name}", uploaded_file.getvalue(), {"content-type": "application/pdf" if "pdf" in uploaded_file.type else "image/jpeg", "x-upsert": "true"})
@@ -174,13 +174,13 @@ def login_screen():
             if res.session:
                 st.session_state.authenticated, st.session_state.user_email = True, e
                 st.rerun()
-        except: st.error("Login failed. Verify your email if you haven't yet.")
+        except: st.error("Login failed. Verify email if you just registered.")
         
     elif mode == "Register" and st.button("Create Account"):
         try:
             client.auth.sign_up({"email": e, "password": p})
-            st.success("Verification link sent! Click it to enable data saving.")
-        except Exception as ex: st.error(f"Registration error: {ex}")
+            st.success("Verification link sent!")
+        except Exception as ex: st.error(f"Error: {ex}")
 
 if st.session_state.authenticated:
     main_dashboard()

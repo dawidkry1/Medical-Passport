@@ -24,13 +24,19 @@ hide_st_style = """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
 # Connection Setup
-URL = st.secrets["SUPABASE_URL"]
-KEY = st.secrets["SUPABASE_KEY"]
-client = create_client(URL, KEY)
-
-# Configure Gemini
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-1.5-flash')
+try:
+    URL = st.secrets["SUPABASE_URL"]
+    KEY = st.secrets["SUPABASE_KEY"]
+    client = create_client(URL, KEY)
+    
+    # Configure Gemini
+    if "GEMINI_API_KEY" in st.secrets:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        model = genai.GenerativeModel('gemini-1.5-flash')
+    else:
+        st.error("⚠️ GEMINI_API_KEY missing in Secrets tab.")
+except Exception as e:
+    st.error(f"Configuration Error: {e}")
 
 # --- 2. GLOBAL MAPPING DATA ---
 EQUIVALENCY_MAP = {
@@ -73,27 +79,25 @@ def get_raw_text(file):
 def gemini_ai_parse(text):
     prompt = f"""
     You are a medical recruitment expert. Analyze the following Doctor's CV and extract information into a JSON object.
-    You must classify entries based on clinical professional standards.
+    Ensure all medical abbreviations are respected (e.g., GMC, SHO, SpR, MRCP).
     
-    Keys to use:
+    Structure the JSON exactly like this:
     - "rotations": [{{"specialty": "", "hospital": "", "dates": "", "description": ""}}]
     - "procedures": [{{"name": "", "level": "Observed/Supervised/Independent"}}]
     - "qips": [{{"title": "", "cycle": "Initial/Closed Loop", "outcome": ""}}]
-    - "teaching": [{{"topic": "", "audience": "", "feedback_received": "Yes/No"}}]
+    - "teaching": [{{"topic": "", "audience": "", "details": ""}}]
     - "education": [{{"course": "", "hours": "", "year": ""}}]
     - "publications": [{{"citation": "", "type": "Poster/Journal/Oral"}}]
-    - "registrations": [{{"body": "", "number": ""}}]
-
-    Ensure the output is ONLY raw JSON.
+    
+    Return ONLY raw JSON.
     CV Content: {text}
     """
     try:
         response = model.generate_content(prompt)
-        # Handle cases where Gemini wraps JSON in markdown blocks
         clean_json = re.sub(r'```json|```', '', response.text).strip()
         return json.loads(clean_json)
     except Exception as e:
-        st.error(f"AI Synthesis failed. Check API Key in Secrets. Error: {e}")
+        st.error(f"AI Synthesis failed: {e}")
         return None
 
 # --- 5. MAIN DASHBOARD ---
@@ -101,9 +105,9 @@ def main_dashboard():
     with st.sidebar:
         st.header("🛂 Doctor AI Sync")
         st.write(f"Doctor: **{st.session_state.user_email}**")
-        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
+        up_file = st.file_uploader("Upload Medical CV (PDF/DOCX)", type=['pdf', 'docx'])
         if up_file and st.button("🚀 Run Gemini Clinical Scan"):
-            with st.spinner("AI is categorizing your professional history..."):
+            with st.spinner("AI is categorizing your clinical record..."):
                 raw_text = get_raw_text(up_file)
                 parsed = gemini_ai_parse(raw_text)
                 if parsed:
@@ -139,16 +143,16 @@ def main_dashboard():
         
         if st.button("💾 Save Profile"):
             client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier}, on_conflict="user_email").execute()
-            st.toast("Profile Synced.")
+            st.toast("Profile Saved.")
 
     # 2. EXPERIENCE
     with tabs[1]:
         st.subheader("Clinical Rotations")
         for i, item in enumerate(st.session_state.parsed_data.get("rotations", [])):
-            with st.expander(f"Rotation: {item.get('specialty', 'Unknown')}"):
+            with st.expander(f"Rotation: {item.get('specialty', 'Review Required')}"):
                 st.write(f"**Hospital:** {item.get('hospital')}")
                 st.write(f"**Dates:** {item.get('dates')}")
-                st.write(item.get('description'))
+                st.info(item.get('description'))
                 if st.button(f"Save Rotation {i}", key=f"rb_{i}"):
                     client.table("rotations").insert({"user_email": st.session_state.user_email, "description": str(item)}).execute()
 
@@ -158,7 +162,9 @@ def main_dashboard():
         
         for i, item in enumerate(st.session_state.parsed_data.get("procedures", [])):
             with st.expander(f"Skill: {item.get('name')}"):
-                lvl = st.selectbox("Competency", ["Observed", "Supervised", "Independent"], index=["Observed", "Supervised", "Independent"].index(item.get('level', 'Observed')) if item.get('level') in ["Observed", "Supervised", "Independent"] else 0, key=f"pl_{i}")
+                lvl = st.selectbox("Competency", ["Observed", "Supervised", "Independent"], 
+                                   index=["Observed", "Supervised", "Independent"].index(item.get('level', 'Observed')) if item.get('level') in ["Observed", "Supervised", "Independent"] else 0, 
+                                   key=f"pl_{i}")
                 if st.button("Log Procedure", key=f"pb_{i}"):
                     client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": item.get('name'), "level": lvl}).execute()
 
@@ -179,6 +185,7 @@ def main_dashboard():
         for i, item in enumerate(st.session_state.parsed_data.get("teaching", [])):
             with st.expander(f"Session: {item.get('topic')}"):
                 st.write(f"**Audience:** {item.get('audience')}")
+                st.write(item.get('details'))
                 if st.button("Save Teaching", key=f"tb_{i}"):
                     client.table("teaching").insert({"user_email": st.session_state.user_email, "title": item.get('topic')}).execute()
 
@@ -187,7 +194,7 @@ def main_dashboard():
         st.subheader("Educational Courses & CPD")
         for i, item in enumerate(st.session_state.parsed_data.get("education", [])):
             with st.expander(f"Education: {item.get('course')}"):
-                st.write(f"**Hours:** {item.get('hours')}")
+                st.write(f"**Year:** {item.get('year')} | **Hours:** {item.get('hours')}")
                 if st.button("Log CME", key=f"eb_{i}"):
                     client.table("education").insert({"user_email": st.session_state.user_email, "course": item.get('course')}).execute()
 
@@ -195,17 +202,18 @@ def main_dashboard():
     with tabs[6]:
         st.subheader("Research & Publications")
         for i, item in enumerate(st.session_state.parsed_data.get("publications", [])):
-            with st.expander(f"Publication: {item.get('citation')[:50]}..."):
+            with st.expander(f"Publication: {item.get('type')}"):
                 st.write(item.get('citation'))
                 if st.button("Save Publication", key=f"pubb_{i}"):
                     client.table("projects").insert({"user_email": st.session_state.user_email, "title": item.get('citation'), "type": "Publication"}).execute()
 
     # 8. EXPORT
     with tabs[7]:
-        st.subheader("Final Portfolio Generation")
-        st.write("Ready to compile your AI-standardized clinical passport.")
-        if st.button("🏗️ Build Verified Passport"):
-            st.info("Compiling global seniority mapping and verified logs...")
+        st.subheader("International Portfolio Export")
+        st.write("Confirm targets for PDF translation.")
+        export_targets = st.multiselect("Include Equivalency for:", options=list(COUNTRY_KEY_MAP.keys()), default=["United Kingdom"])
+        if st.button("🏗️ Build Professional Clinical Passport"):
+            st.info("Generating global equivalents and clinical verification...")
 
 # --- LOGIN GATE ---
 if not st.session_state.authenticated:

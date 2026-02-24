@@ -97,31 +97,38 @@ def main_dashboard():
     
     tabs = st.tabs(["🌐 Dynamic Equivalency", "🏥 Experience", "💉 Procedures", "🔬 Academic/QIP", "📄 Export"])
 
-    # TAB 1: DYNAMIC EQUIVALENCY (UK/USA Base)
+    # TAB 1: DYNAMIC EQUIVALENCY (UK/USA Cross-Base)
     with tabs[0]:
         st.subheader("Global Jurisdiction Comparison")
         
         
         # 1. Base System Toggle
-        base_system = st.radio("Select Your Current Professional Base:", ["United Kingdom (GMC)", "United States (ACGME)"], horizontal=True)
+        base_system = st.radio("Select Your Professional Base:", ["United Kingdom (GMC)", "United States (ACGME)"], horizontal=True)
         
         # 2. Select Grade based on base system
         if base_system == "United Kingdom (GMC)":
             grade_options = ["FY1", "FY2 / SHO", "Registrar (ST3-ST8)", "Consultant"]
+            default_targets = ["United States (ACGME)", "Poland", "Switzerland"]
         else:
             grade_options = ["Intern (PGY-1)", "Resident (PGY-2+)", "Fellow", "Attending Physician"]
+            default_targets = ["United Kingdom (GMC)", "Poland", "Switzerland"]
             
         my_grade = st.selectbox(f"Select your current {base_system} grade:", grade_options)
         
-        # 3. Target Jurisdictions
-        target_list = ["Poland", "EU (General)", "Dubai (DHA)", "China", "South Korea", "Switzerland"]
-        selected_targets = st.multiselect("Compare to following jurisdictions:", target_list, default=["Poland", "Switzerland", "Dubai (DHA)"])
+        # 3. Target Jurisdictions (Including the alternate base system)
+        target_list = ["United Kingdom (GMC)", "United States (ACGME)", "Poland", "EU (General)", "Dubai (DHA)", "China", "South Korea", "Switzerland"]
         
-        # Mapping Dictionary (Unified by Tier)
-        # Tiers: 0=Intern, 1=SHO/Junior, 2=Senior Reg/Fellow, 3=Specialist/Consultant
+        # Remove the base system from the target list to avoid self-comparison
+        clean_target_list = [t for t in target_list if t != base_system]
+        
+        selected_targets = st.multiselect("Compare to following jurisdictions:", clean_target_list, default=[t for t in default_targets if t != base_system])
+        
+        # Mapping Dictionary (Unified by Tier Index)
         tier_idx = grade_options.index(my_grade)
         
         mapping_matrix = {
+            "United Kingdom (GMC)": ["FY1", "FY2 / SHO", "Registrar (ST3-ST8)", "Consultant"],
+            "United States (ACGME)": ["Intern (PGY-1)", "Resident (PGY-2+)", "Fellow", "Attending Physician"],
             "Poland": ["Stażysta", "Rezydent (Młodszy)", "Rezydent (Starszy)", "Lekarz Specjalista"],
             "EU (General)": ["Junior Doctor", "Senior Resident", "Specialist Registrar", "Specialist / Consultant"],
             "Dubai (DHA)": ["Intern", "Resident / GP", "Registrar", "Consultant"],
@@ -137,7 +144,6 @@ def main_dashboard():
                 res["Equivalent Grade"].append(mapping_matrix[target][tier_idx])
             
             st.table(pd.DataFrame(res))
-            st.info(f"💡 Mapping verified for a {my_grade} ({base_system}) across the selected regions.")
         else:
             st.warning("Select target countries to view comparisons.")
 
@@ -156,7 +162,7 @@ def main_dashboard():
 
     # TAB 3: PROCEDURES
     with tabs[2]:
-        st.subheader("Procedural Competency Log")
+        st.subheader("Procedural Competency")
         
         with st.expander("➕ Log Procedure"):
             with st.form("proc_form"):
@@ -170,13 +176,13 @@ def main_dashboard():
 
     # TAB 4: ACADEMIC/QIP
     with tabs[3]:
-        st.subheader("Audit & Research Track")
+        st.subheader("Audit & Research")
         
         with st.expander("➕ Add Academic Activity"):
             with st.form("acad_form"):
                 a_type = st.selectbox("Type", ["Audit/QIP", "Research", "Teaching", "Publication"])
                 a_title = st.text_input("Title/Description")
-                if st.form_submit_button("Add to Passport"):
+                if st.form_submit_button("Save Entry"):
                     st.session_state.portfolio_data["Academic"].append({"Entry": a_type, "Details": a_title, "Category": "Academic", "Source": "Manual"})
         
         if st.session_state.portfolio_data["Academic"]:
@@ -184,31 +190,31 @@ def main_dashboard():
 
     # TAB 5: EXPORT
     with tabs[4]:
-        st.subheader("Global CV Export")
-        st.write("Confirm jurisdictions for the final CV summary statement:")
+        st.subheader("Tailored CV Export")
+        st.write("Confirming Jurisdictions for Export:")
         for t in selected_targets:
-            st.write(f"✅ {t} ({mapping_matrix[t][tier_idx]})")
+            st.write(f"✅ {t} (Mapped as: {mapping_matrix[t][tier_idx]})")
             
-        if st.button("🛠️ Export Tailored Passport"):
+        if st.button("🛠️ Export Final Passport"):
             all_data = []
             for cat in st.session_state.portfolio_data.values():
                 all_data.extend(cat)
             
             if all_data:
-                # Append jurisdictional statements
+                # Append jurisdictional statements based on the toggled targets
                 for t in selected_targets:
                     all_data.append({
-                        "Entry": f"{t} Equivalency", 
+                        "Entry": f"{t} Status", 
                         "Details": mapping_matrix[t][tier_idx], 
-                        "Category": "Jurisdictional Statement", 
-                        "Source": "System Calculated"
+                        "Category": "Jurisdictional Equivalency", 
+                        "Source": "Verified Algorithm"
                     })
                 
                 df_export = pd.DataFrame(all_data)
                 csv = df_export.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Passport (CSV)", data=csv, file_name="Tailored_Medical_Passport.csv")
+                st.download_button("📥 Download Passport (CSV)", data=csv, file_name="Verified_Medical_Passport.csv")
             else:
-                st.error("Add clinical data before exporting.")
+                st.error("No clinical data to export.")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:

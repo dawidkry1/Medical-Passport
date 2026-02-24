@@ -31,7 +31,7 @@ try:
     supabase_client = create_client(URL, KEY)
     
     if "GEMINI_API_KEY" in st.secrets:
-        # Initialize Client with explicit stable version to avoid v1beta 404s
+        # Initializing the client with explicit v1 stable endpoint
         ai_client = genai.Client(
             api_key=st.secrets["GEMINI_API_KEY"],
             http_options={'api_version': 'v1'}
@@ -72,19 +72,25 @@ def handle_login():
 # --- 4. THE PARSER ---
 def get_raw_text(file):
     try:
+        text = ""
         if file.name.endswith('.pdf'):
             with pdfplumber.open(file) as pdf:
-                return "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
+                text = "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
         elif file.name.endswith('.docx'):
             doc = docx.Document(file)
-            return "\n".join([p.text for p in doc.paragraphs])
+            text = "\n".join([p.text for p in doc.paragraphs])
+        
+        # SANITIZATION: Remove excessive newlines and tabs that break JSON payloads
+        text = re.sub(r'\s+', ' ', text).strip()
+        # LIMIT: Clip text to 10,000 characters to prevent payload overflow
+        return text[:10000] 
     except: return ""
 
 def gemini_ai_parse(text):
     prompt_text = (
-        "You are a medical career expert. Extract the following Doctor's CV into a structured JSON object. "
-        "Strictly use these keys: rotations, procedures, qips, teaching, education, publications. "
-        f"CV Content: {text}"
+        "Extract medical CV info into JSON. "
+        "Keys: rotations, procedures, qips, teaching, education, publications. "
+        f"Data: {text}"
     )
     
     try:
@@ -92,13 +98,14 @@ def gemini_ai_parse(text):
             model=MODEL_ID,
             contents=prompt_text,
             config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.1
+                response_mime_type="application/json"
             )
         )
         return json.loads(response.text)
     except Exception as e:
-        if "exhausted" in str(e).lower():
+        if "400" in str(e):
+            st.error("🚨 Payload Error: The CV text is too complex for the AI to process in one go. I've attempted to clean the text—please try again with a shorter version.")
+        elif "exhausted" in str(e).lower():
             st.error("⏳ Quota Exhausted: Please wait 60 seconds.")
         else:
             st.error(f"AI Synthesis failed: {e}")
@@ -109,7 +116,7 @@ def main_dashboard():
     with st.sidebar:
         st.header("🛂 Doctor AI Sync")
         st.write(f"Doctor: **{st.session_state.user_email}**")
-        up_file = st.file_uploader("Upload Medical CV (PDF/DOCX)", type=['pdf', 'docx'])
+        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
         if up_file and st.button("🚀 Run Gemini Clinical Scan"):
             with st.spinner("AI is synthesizing clinical history..."):
                 raw_text = get_raw_text(up_file)
@@ -118,6 +125,8 @@ def main_dashboard():
                     if parsed:
                         st.session_state.parsed_data = parsed
                         st.success("Synthesis Complete.")
+                else:
+                    st.error("Text extraction failed.")
         
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
@@ -143,7 +152,7 @@ def main_dashboard():
         map_data = [{"Country": c, "Equivalent Title": EQUIVALENCY_MAP[selected_tier].get(COUNTRY_KEY_MAP[c], "N/A")} for c in active_c]
         st.table(pd.DataFrame(map_data))
         
-        if st.button("💾 Save Global Profile"):
+        if st.button("💾 Save Profile"):
             supabase_client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier}, on_conflict="user_email").execute()
             st.toast("Profile Synced.")
 
@@ -151,9 +160,9 @@ def main_dashboard():
     with tabs[1]:
         st.subheader("Clinical Rotations")
         for i, item in enumerate(st.session_state.parsed_data.get("rotations", [])):
-            with st.expander(f"{item.get('specialty', 'Unknown')} - {item.get('hospital', 'Unknown')}"):
+            with st.expander(f"{item.get('specialty', 'Rotation')} - {item.get('hospital', 'Hospital')}"):
                 st.write(f"**Dates:** {item.get('dates')}")
-                st.info(item.get('description', 'No details extracted.'))
+                st.info(item.get('description', 'No details.'))
 
     # 3. PROCEDURES
     with tabs[2]:
@@ -164,11 +173,10 @@ def main_dashboard():
 
     # 4. QIP & AUDIT
     with tabs[3]:
-        st.subheader("Quality Improvement & Clinical Audit")
+        st.subheader("Quality Improvement & Audit")
         
-        # FIXED: Removed unmatched parenthesis
         for item in st.session_state.parsed_data.get("qips", []):
-            st.write(f"🔬 **{item.get('title', 'Audit')}** — Cycle: {item.get('cycle', 'Unknown')}")
+            st.write(f"🔬 **{item.get('title', 'Audit')}** ({item.get('cycle', 'Cycle')})")
 
     # 5. TEACHING
     with tabs[4]:
@@ -178,18 +186,18 @@ def main_dashboard():
 
     # 6. SEMINARS & CME
     with tabs[5]:
-        st.subheader("Educational Courses & CPD")
+        st.subheader("Educational Courses")
         for item in st.session_state.parsed_data.get("education", []):
             st.write(f"📚 {item.get('course')} ({item.get('year', 'N/A')}) — {item.get('hours', 'N/A')} hours")
 
     # 7. EXPORT
     with tabs[6]:
-        st.subheader("Final Portfolio Generation")
+        st.subheader("Build Passport")
         st.button("🏗️ Build Professional Passport PDF")
 
-# --- LOGIN GATE ---
+# --- LOGIN ---
 if not st.session_state.authenticated:
-    st.title("🏥 Medical Passport Gateway")
+    st.title("🏥 Medical Gateway")
     with st.form("login"):
         st.text_input("Email", key="login_email")
         st.text_input("Password", type="password", key="login_password")

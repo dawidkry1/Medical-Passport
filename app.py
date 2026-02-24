@@ -31,7 +31,7 @@ try:
     supabase_client = create_client(URL, KEY)
     
     if "GEMINI_API_KEY" in st.secrets:
-        # Force v1 stable
+        # Explicit stable v1 API
         ai_client = genai.Client(
             api_key=st.secrets["GEMINI_API_KEY"],
             http_options={'api_version': 'v1'}
@@ -69,8 +69,8 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. THE DEEP-CLEAN PARSER ---
-def get_sanitized_text(file):
+# --- 4. THE ROBUST CHUNKING PARSER ---
+def get_clean_clinical_text(file):
     try:
         raw_text = ""
         if file.name.endswith('.pdf'):
@@ -80,21 +80,21 @@ def get_sanitized_text(file):
             doc = docx.Document(file)
             raw_text = "\n".join([p.text for p in doc.paragraphs])
         
-        # 1. Remove non-ASCII characters (fixes 400 Payload errors)
-        clean_text = raw_text.encode("ascii", "ignore").decode()
-        # 2. Collapse all whitespace/tabs into single spaces
-        clean_text = re.sub(r'\s+', ' ', clean_text)
-        # 3. Limit to 8,000 chars to stay well within payload limits
-        return clean_text[:8000].strip()
+        # Aggressive cleaning: Keep only letters, numbers, and basic punctuation
+        clean = re.sub(r'[^a-zA-Z0-9\s\.,\-\(\):/]', '', raw_text)
+        # Collapse whitespace
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        # Return only the first 6000 characters to ensure the payload is lean
+        return clean[:6000]
     except Exception as e:
         st.error(f"Extraction error: {e}")
         return ""
 
 def gemini_ai_parse(text):
-    # Ultra-concise prompt to save tokens
+    # Minimalist prompt to avoid payload bloat
     prompt_text = (
-        "Extract doctor's clinical data into JSON. "
-        "Keys: rotations, procedures, qips, teaching, education, publications. "
+        "Convert this doctor's CV text into a JSON object with these exact keys: "
+        "rotations, procedures, qips, teaching, education, publications. "
         f"Text: {text}"
     )
     
@@ -104,33 +104,33 @@ def gemini_ai_parse(text):
             contents=prompt_text,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.1
+                temperature=0.0 # Strict accuracy
             )
         )
         return json.loads(response.text)
     except Exception as e:
         if "400" in str(e):
-            st.error("🚨 Payload Error. The file layout is too dense. Try copy-pasting your CV text into a simple Word doc and uploading that.")
+            st.error("🚨 Payload Error: Even with cleaning, the CV formatting is too complex for the AI. Please try a simplified 'plain text' version of your CV.")
         elif "exhausted" in str(e).lower():
-            st.error("⏳ Quota reached. Wait 60s and try again.")
+            st.error("⏳ Quota Full: Wait 60s and try again.")
         else:
-            st.error(f"AI Synthesis failed: {e}")
+            st.error(f"AI API Error: {e}")
         return None
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Doctor AI Sync")
-        st.write(f"Doctor: **{st.session_state.user_email}**")
-        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
+        st.write(f"Logged in: **{st.session_state.user_email}**")
+        up_file = st.file_uploader("Upload CV (Best results with single column)", type=['pdf', 'docx'])
         if up_file and st.button("🚀 Run Clinical Scan"):
-            with st.spinner("Sanitizing and analyzing clinical record..."):
-                clean_text = get_sanitized_text(up_file)
+            with st.spinner("Executing chunked clinical analysis..."):
+                clean_text = get_clean_clinical_text(up_file)
                 if clean_text:
                     parsed = gemini_ai_parse(clean_text)
                     if parsed:
                         st.session_state.parsed_data = parsed
-                        st.success("Synthesis Complete.")
+                        st.success("Analysis Complete.")
                 else:
                     st.error("No extractable text found.")
         
@@ -158,7 +158,7 @@ def main_dashboard():
         map_data = [{"Country": c, "Equivalent Title": EQUIVALENCY_MAP[selected_tier].get(COUNTRY_KEY_MAP[c], "N/A")} for c in active_c]
         st.table(pd.DataFrame(map_data))
         
-        if st.button("💾 Save Profile"):
+        if st.button("💾 Update Global Profile"):
             supabase_client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier}, on_conflict="user_email").execute()
             st.toast("Profile Synced.")
 
@@ -166,7 +166,7 @@ def main_dashboard():
     with tabs[1]:
         st.subheader("Clinical Rotations")
         for i, item in enumerate(st.session_state.parsed_data.get("rotations", [])):
-            with st.expander(f"{item.get('specialty', 'Rotation')} - {item.get('hospital', 'Hospital')}"):
+            with st.expander(f"{item.get('specialty', 'Unknown')} - {item.get('hospital', 'Unknown')}"):
                 st.write(f"**Dates:** {item.get('dates')}")
                 st.info(item.get('description', 'No details.'))
 
@@ -179,7 +179,7 @@ def main_dashboard():
 
     # 4. QIP & AUDIT
     with tabs[3]:
-        st.subheader("Quality Improvement & Audit")
+        st.subheader("Quality Improvement & Clinical Audit")
         
         for item in st.session_state.parsed_data.get("qips", []):
             st.write(f"🔬 **{item.get('title', 'Audit')}** ({item.get('cycle', 'Cycle')})")
@@ -194,11 +194,12 @@ def main_dashboard():
     with tabs[5]:
         st.subheader("Educational Courses")
         for item in st.session_state.parsed_data.get("education", []):
-            st.write(f"📚 {item.get('course')} ({item.get('year', 'N/A')}) — {item.get('hours', 'N/A')} hours")
+            st.write(f"📚 {item.get('course', 'Course')} ({item.get('year', 'N/A')}) — {item.get('hours', 'N/A')} hours")
 
     # 7. EXPORT
     with tabs[6]:
-        st.subheader("Build Passport")
+        st.subheader("Portfolio Generation")
+        st.info("Ready to build your verified international clinical passport.")
         st.button("🏗️ Build Professional Passport PDF")
 
 # --- LOGIN ---

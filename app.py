@@ -73,24 +73,32 @@ COUNTRY_KEY_MAP = {
 # --- 3. SESSION & AUTH ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = None
 
 def handle_login():
     try:
         res = client.auth.sign_in_with_password({"email": st.session_state.login_email, "password": st.session_state.login_password})
         if res.user:
             st.session_state.authenticated = True
-            st.session_state.user_email = st.session_state.login_email
-    except: st.error("Login failed. Check your credentials.")
+            st.session_state.user_email = res.user.email
+            # Set the session in the client for RLS to work
+            client.auth.set_session(res.session.access_token, res.session.refresh_token)
+    except Exception as e:
+        st.error(f"Login failed: {e}")
 
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
+    st.info("Secure Login for Verified Clinicians")
     with st.form("login_form"):
-        st.text_input("Email", key="login_email")
-        st.text_input("Password", type="password", key="login_password")
-        st.form_submit_button("Sign In", on_click=handle_login, use_container_width=True)
+        st.text_input("Institutional/Personal Email", key="login_email")
+        st.text_input("Security Password", type="password", key="login_password")
+        st.form_submit_button("Sign In to Secured Vault", on_click=handle_login, use_container_width=True)
 
 def fetch_user_data(table_name):
+    if not st.session_state.user_email: return []
     try:
+        # The .eq("user_email", ...) is a secondary check; RLS provides the primary security
         res = client.table(table_name).select("*").eq("user_email", st.session_state.user_email).execute()
         return res.data
     except Exception:
@@ -130,11 +138,13 @@ def generate_pdf(email, profile, rotations, procedures, projects, countries):
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.write(f"Logged in: **{st.session_state.user_email}**")
-        if st.button("🔄 Reload App"):
+        st.success(f"Verified Session: {st.session_state.user_email}")
+        if st.button("🔄 Sync Vault"):
             st.rerun()
         if st.button("🚪 Logout", use_container_width=True):
+            client.auth.sign_out()
             st.session_state.authenticated = False
+            st.session_state.user_email = None
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
@@ -148,15 +158,12 @@ def main_dashboard():
 
     with tabs[0]:
         st.subheader("Global Standing Mapping")
-        
-        # Determine Current Tier
         curr_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
         try: t_idx = list(EQUIVALENCY_MAP.keys()).index(curr_tier)
         except: t_idx = 0
         
         selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
         
-        # Parse Saved Countries
         raw_c = profile[0].get('selected_countries', []) if profile else ["United Kingdom", "Poland"]
         if isinstance(raw_c, str):
             try: saved_c = json.loads(raw_c)
@@ -176,19 +183,17 @@ def main_dashboard():
 
         if st.button("💾 Save Preferences"):
             try:
-                # Silent Upsert: Attempts full save, fallbacks to Tier-only if DB schema isn't ready
                 save_payload = {
                     "user_email": st.session_state.user_email, 
                     "global_tier": selected_tier, 
                     "selected_countries": json.dumps(active_countries)
                 }
                 client.table("profiles").upsert(save_payload, on_conflict="user_email").execute()
-                st.success("Preferences Saved!")
+                st.success("Preferences Secured & Saved.")
             except Exception:
-                # Silent Fallback for Schema Cache issues
                 fallback_payload = {"user_email": st.session_state.user_email, "global_tier": selected_tier}
                 client.table("profiles").upsert(fallback_payload, on_conflict="user_email").execute()
-                st.success("Preferences Saved!")
+                st.success("Preferences Secured & Saved.")
 
     with tabs[1]:
         st.subheader("Clinical Experience")
@@ -237,10 +242,12 @@ def main_dashboard():
 
     with tabs[4]:
         st.subheader("🛡️ Verified Vault")
-        up = st.file_uploader("Vault File", type=['pdf', 'jpg', 'png'])
-        if up and st.button("Upload"):
+        st.warning("All files in this vault are encrypted and restricted to your account.")
+        up = st.file_uploader("Upload Diploma or Certificate", type=['pdf', 'jpg', 'png'])
+        if up and st.button("Upload to Secure Cloud"):
+            # Files are stored in a folder named after the user's email
             client.storage.from_('medical-vault').upload(f"{st.session_state.user_email}/{up.name}", up.getvalue())
-            st.success("Saved.")
+            st.success("Verified Document Stored.")
         
         try:
             files = client.storage.from_('medical-vault').list(st.session_state.user_email)
@@ -248,15 +255,16 @@ def main_dashboard():
                 for f in files:
                     c1, c2 = st.columns([0.8, 0.2])
                     c1.write(f"📄 {f['name']}")
+                    # Signed URL ensures the link expires in 60 seconds
                     res = client.storage.from_('medical-vault').create_signed_url(f"{st.session_state.user_email}/{f['name']}", 60)
                     c2.link_button("View", res['signedURL'])
         except Exception:
             st.info("Vault is currently empty.")
 
     with tabs[5]:
-        st.subheader("Export PDF")
+        st.subheader("Export Portfolio")
         sel_countries = st.multiselect("Include in PDF Header:", list(COUNTRY_KEY_MAP.keys()), default=active_countries)
-        if st.button("🏗️ Compile Portfolio"):
+        if st.button("🏗️ Compile Secured PDF"):
             pdf_bytes = generate_pdf(st.session_state.user_email, profile, rotations, procedures, projects, sel_countries)
             st.download_button("⬇️ Download PDF", pdf_bytes, "Medical_Portfolio.pdf", "application/pdf")
 

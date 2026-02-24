@@ -31,7 +31,7 @@ try:
     supabase_client = create_client(URL, KEY)
     
     if "GEMINI_API_KEY" in st.secrets:
-        # Initialize Client with explicit stable version
+        # Initialize Client with explicit stable version to avoid v1beta 404s
         ai_client = genai.Client(
             api_key=st.secrets["GEMINI_API_KEY"],
             http_options={'api_version': 'v1'}
@@ -81,7 +81,6 @@ def get_raw_text(file):
     except: return ""
 
 def gemini_ai_parse(text):
-    # Prompting the model for clinical categorization
     prompt_text = (
         "You are a medical career expert. Extract the following Doctor's CV into a structured JSON object. "
         "Strictly use these keys: rotations, procedures, qips, teaching, education, publications. "
@@ -89,21 +88,18 @@ def gemini_ai_parse(text):
     )
     
     try:
-        # Use the generate_content method with structured parts to avoid payload errors
         response = ai_client.models.generate_content(
             model=MODEL_ID,
             contents=prompt_text,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.1 # Low temperature for high accuracy
+                temperature=0.1
             )
         )
         return json.loads(response.text)
     except Exception as e:
-        if "400" in str(e):
-            st.error("🚨 JSON Payload Error: The CV text contains characters that are confusing the API. Try a simpler version of the CV.")
-        elif "exhausted" in str(e).lower():
-            st.error("⏳ Quota Exhausted: Please wait 60 seconds. The free tier has strict rate limits.")
+        if "exhausted" in str(e).lower():
+            st.error("⏳ Quota Exhausted: Please wait 60 seconds.")
         else:
             st.error(f"AI Synthesis failed: {e}")
         return None
@@ -122,8 +118,6 @@ def main_dashboard():
                     if parsed:
                         st.session_state.parsed_data = parsed
                         st.success("Synthesis Complete.")
-                else:
-                    st.error("Could not extract text from file.")
         
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
@@ -172,19 +166,20 @@ def main_dashboard():
     with tabs[3]:
         st.subheader("Quality Improvement & Clinical Audit")
         
-        for item in st.session_state.parsed_data.get("qips", [])):
+        # FIXED: Removed unmatched parenthesis
+        for item in st.session_state.parsed_data.get("qips", []):
             st.write(f"🔬 **{item.get('title', 'Audit')}** — Cycle: {item.get('cycle', 'Unknown')}")
 
     # 5. TEACHING
     with tabs[4]:
         st.subheader("Teaching Portfolio")
-        for item in st.session_state.parsed_data.get("teaching", [])):
+        for item in st.session_state.parsed_data.get("teaching", []):
             st.write(f"👨‍🏫 **{item.get('topic')}** for {item.get('audience')}")
 
     # 6. SEMINARS & CME
     with tabs[5]:
         st.subheader("Educational Courses & CPD")
-        for item in st.session_state.parsed_data.get("education", [])):
+        for item in st.session_state.parsed_data.get("education", []):
             st.write(f"📚 {item.get('course')} ({item.get('year', 'N/A')}) — {item.get('hours', 'N/A')} hours")
 
     # 7. EXPORT

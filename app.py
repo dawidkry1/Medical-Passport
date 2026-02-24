@@ -7,9 +7,9 @@ import pdfplumber
 import docx
 import json
 import io
-import time
+import re
 
-# --- 1. CORE CONFIG & STYLING ---
+# --- 1. CORE CONFIG ---
 st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
 
 hide_st_style = """
@@ -30,18 +30,19 @@ try:
     KEY = st.secrets["SUPABASE_KEY"]
     supabase_client = create_client(URL, KEY)
     
-    # Configure the NEW GenAI Client
     if "GEMINI_API_KEY" in st.secrets:
-        # Client defaults to stable v1 API
-        ai_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-        # STABLE MODEL ID for the new SDK
+        # FORCE THE CLIENT TO USE V1 STABLE ENDPOINT
+        ai_client = genai.Client(
+            api_key=st.secrets["GEMINI_API_KEY"],
+            http_options={'api_version': 'v1'}
+        )
         MODEL_ID = "gemini-1.5-flash" 
     else:
         st.error("⚠️ GEMINI_API_KEY missing in Secrets tab.")
 except Exception as e:
     st.error(f"Configuration Error: {e}")
 
-# --- 2. GLOBAL MAPPING DATA ---
+# --- 2. MAPPING DATA ---
 EQUIVALENCY_MAP = {
     "Tier 1: Junior (Intern/FY1)": {"UK": "Foundation Year 1", "US": "PGY-1 (Intern)", "Australia": "Intern", "Poland": "Lekarz stażysta"},
     "Tier 2: Intermediate (SHO/Resident)": {"UK": "FY2 / Core Trainee", "US": "PGY-2/3 (Resident)", "Australia": "Resident / RMO", "Poland": "Lekarz rezydent (Junior)"},
@@ -51,7 +52,7 @@ EQUIVALENCY_MAP = {
 
 COUNTRY_KEY_MAP = {"United Kingdom": "UK", "United States": "US", "Australia": "Australia", "Poland": "Poland"}
 
-# --- 3. SESSION & AUTH ---
+# --- 3. SESSION STATE ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
@@ -68,7 +69,7 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. THE AI "CLINICAL BRAIN" PARSER ---
+# --- 4. PARSER ---
 def get_raw_text(file):
     try:
         if file.name.endswith('.pdf'):
@@ -80,18 +81,7 @@ def get_raw_text(file):
     except: return ""
 
 def gemini_ai_parse(text):
-    prompt = f"""
-    You are a medical consultant. Extract this CV into JSON.
-    Identify: 
-    - rotations (clinical placements)
-    - procedures (clinical skills + level: Observed/Supervised/Independent)
-    - qips (audits/quality improvement + cycle: Initial/Closed Loop)
-    - teaching (lectures/tutoring)
-    - education (seminars/CME/courses)
-    - publications (research/posters)
-
-    CV Text: {text}
-    """
+    prompt = f"Convert this Doctor CV into JSON with keys: rotations, procedures, qips, teaching, education, publications. CV: {text}"
     try:
         response = ai_client.models.generate_content(
             model=MODEL_ID,
@@ -102,19 +92,18 @@ def gemini_ai_parse(text):
         )
         return json.loads(response.text)
     except Exception as e:
-        if "exhausted" in str(e).lower() or "429" in str(e):
-            st.error("🚨 API Quota Full. Please wait 60 seconds and try again. The free tier has strict limits on large documents.")
+        if "exhausted" in str(e).lower():
+            st.error("🚨 Quota Limit Hit. The free Gemini tier allows 3 requests per minute. Please wait 60 seconds.")
         else:
-            st.error(f"AI Synthesis failed: {e}")
+            st.error(f"Connection Error: {e}")
         return None
 
-# --- 5. MAIN DASHBOARD ---
+# --- 5. DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Doctor AI Sync")
-        st.write(f"Doctor: **{st.session_state.user_email}**")
         up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
-        if up_file and st.button("🚀 Run Gemini Clinical Scan"):
+        if up_file and st.button("🚀 Run Gemini Scan"):
             with st.spinner("AI is analyzing clinical history..."):
                 raw_text = get_raw_text(up_file)
                 parsed = gemini_ai_parse(raw_text)
@@ -122,8 +111,7 @@ def main_dashboard():
                     st.session_state.parsed_data = parsed
                     st.success("Analysis Complete.")
         
-        st.divider()
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("🚪 Logout"):
             st.session_state.authenticated = False
             st.rerun()
 
@@ -164,30 +152,25 @@ def main_dashboard():
 
     # 4. QIP & AUDIT
     with tabs[3]:
-        st.subheader("Quality Improvement & Clinical Audit")
+        st.subheader("Quality Improvement")
         
         for i, item in enumerate(st.session_state.parsed_data.get("qips", [])):
             st.write(f"🔬 **{item.get('title', 'Audit')}** ({item.get('cycle', 'Cycle')})")
-            st.caption(item.get('outcome', ''))
 
-    # 5. TEACHING
+    # 5. TEACHING & CME
     with tabs[4]:
-        st.subheader("Teaching Portfolio")
         for i, item in enumerate(st.session_state.parsed_data.get("teaching", [])):
-            st.write(f"👨‍🏫 **{item.get('topic')}** for {item.get('audience')}")
+            st.write(f"👨‍🏫 {item.get('topic')} for {item.get('audience')}")
 
-    # 6. SEMINARS & CME
     with tabs[5]:
-        st.subheader("Educational Courses & CPD")
         for i, item in enumerate(st.session_state.parsed_data.get("education", [])):
             st.write(f"📚 {item.get('course')} ({item.get('year', 'N/A')}) - {item.get('hours', 'N/A')} hrs")
 
-    # 7. EXPORT
+    # 6. EXPORT
     with tabs[6]:
-        st.subheader("Verified Export")
-        st.button("🏗️ Build Professional Passport PDF")
+        st.button("🏗️ Build Verified PDF Passport")
 
-# --- LOGIN ---
+# --- LOGIN GATE ---
 if not st.session_state.authenticated:
     st.title("🏥 Medical Gateway")
     with st.form("login"):

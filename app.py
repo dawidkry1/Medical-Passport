@@ -16,10 +16,11 @@ try:
 except Exception as e:
     st.error(f"Configuration Error: {e}")
 
-# --- 2. SESSION STATE ---
-# Initializing with explicit keys to prevent Line 134/197 errors
+# --- 2. SESSION STATE (The Fix for 137/207) ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+
+# Ensure the portfolio dictionary and its lists are always initialized
 if 'portfolio_data' not in st.session_state:
     st.session_state.portfolio_data = {
         "Experience": [],
@@ -38,10 +39,10 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 3. AUTO-POPULATION LOGIC ---
+# --- 3. THE DOCTOR-CENTRIC LOGIC ENGINE ---
 def auto_populate_cv(text):
-    """Rule-based extraction for clinical markers."""
-    # Clinical History
+    """Scans CV for clinical markers using standardized keys."""
+    # Clinical History Patterns
     exp_pattern = r"\b(SHO|Registrar|Resident|Fellow|Consultant|Intern|Lekarz|Rezydent|Medical Officer)\b"
     hosp_pattern = r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*\s(?:Hospital|Medical Center|Clinic|Trust|Infirmary))"
     
@@ -49,29 +50,31 @@ def auto_populate_cv(text):
     found_hosps = re.findall(hosp_pattern, text)
     
     for i in range(min(len(found_roles), len(found_hosps))):
-        # We use consistent keys: 'Entry', 'Details', 'Source'
         st.session_state.portfolio_data["Experience"].append({
-            "Role/Entry": found_roles[i].upper(), 
-            "Institution/Details": found_hosps[i], 
-            "Source": "Auto-Detected"
+            "Entry": found_roles[i].upper(), 
+            "Details": found_hosps[i], 
+            "Type": "Rotation",
+            "Source": "Auto"
         })
 
-    # Procedures
+    # Procedure Patterns
     proc_list = ["Intubation", "Cannulation", "Lumbar Puncture", "Central Line", "Chest Drain", "Suturing"]
     for p in proc_list:
         if p.lower() in text.lower():
             st.session_state.portfolio_data["Procedures"].append({
-                "Procedure/Entry": p, 
-                "Competency/Details": "Level 3 (Supervised)",
-                "Source": "Auto-Detected"
+                "Entry": p, 
+                "Details": "Level 3 (Independent)",
+                "Type": "Procedure",
+                "Source": "Auto"
             })
 
-    # Academic / Audit
-    if any(x in text.lower() for x in ["audit", "qip", "quality improvement"]):
+    # Academic Markers
+    if any(x in text.lower() for x in ["audit", "qip", "quality improvement", "teaching"]):
         st.session_state.portfolio_data["Academic"].append({
-            "Type/Entry": "Audit/QIP", 
-            "Title/Details": "Detected Project", 
-            "Source": "Auto-Detected"
+            "Entry": "Quality/Teaching", 
+            "Details": "Identified in CV", 
+            "Type": "Academic",
+            "Source": "Auto"
         })
 
 def get_raw_text(file):
@@ -87,28 +90,28 @@ def get_raw_text(file):
 # --- 4. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Passport Control")
-        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
+        st.header("🛂 Clinical Portfolio")
+        up_file = st.file_uploader("Upload CV (PDF/DOCX)", type=['pdf', 'docx'])
         if up_file:
             raw_txt = get_raw_text(up_file)
-            if raw_txt and st.button("🚀 Auto-Populate from CV"):
+            if raw_txt and st.button("🚀 Auto-Populate All Tabs"):
                 auto_populate_cv(raw_txt)
-                st.success("CV Scanned Successfully.")
+                st.success("CV Processed. Check relevant tabs.")
 
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
-    st.title("🩺 Medical Career Passport")
+    st.title("🩺 Global Medical Passport")
     
     tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 Academic/QIP", "📄 Export"])
 
-    # TAB 1: EQUIVALENCY
+    # TAB 1: EQUIVALENCY (The Doctor-to-Doctor Translation)
     with tabs[0]:
-        st.subheader("International Grade Selection")
+        st.subheader("International Grade Mapping")
         
-        target_country = st.selectbox("Compare to Jurisdiction:", ["UK (GMC)", "USA (ACGME)", "Australia (AMC)", "Poland (NIL)"])
+        target_country = st.selectbox("Compare your grade to:", ["UK (GMC)", "USA (ACGME)", "Australia (AMC)", "Poland (NIL)"])
         
         base = ["Intern / FY1", "SHO / PGY-2", "Registrar / Fellow", "Consultant / Attending"]
         mapping = {
@@ -118,83 +121,82 @@ def main_dashboard():
             "Poland (NIL)": ["Stażysta", "Rezydent (Młodszy)", "Rezydent (Starszy)", "Specjalista"]
         }
         
-        eq_df = pd.DataFrame({"Global Tier": base, f"{target_country} Equivalent": mapping[target_country]})
+        eq_df = pd.DataFrame({"Global Standard": base, f"{target_country} Equivalent": mapping[target_country]})
         st.table(eq_df)
 
-    # TAB 2: EXPERIENCE (Line 134 Fix)
+    # TAB 2: EXPERIENCE (Manual + Auto)
     with tabs[1]:
-        st.subheader("Clinical Rotations")
-        with st.expander("➕ Add Manual Entry"):
+        st.subheader("Clinical History")
+        with st.expander("➕ Manually Add Rotation"):
             with st.form("add_exp"):
-                r = st.text_input("Role")
-                l = st.text_input("Hospital")
-                if st.form_submit_button("Save Entry"):
+                role = st.text_input("Role (e.g. SHO)")
+                hosp = st.text_input("Hospital")
+                if st.form_submit_button("Add Entry"):
                     st.session_state.portfolio_data["Experience"].append({
-                        "Role/Entry": r, "Institution/Details": l, "Source": "Manual"
+                        "Entry": role, "Details": hosp, "Type": "Manual Rotation", "Source": "User"
                     })
         
-        # Check if list is not empty AND is a list of dicts
         if st.session_state.portfolio_data["Experience"]:
             st.table(pd.DataFrame(st.session_state.portfolio_data["Experience"]))
         else:
-            st.info("No experience data found yet.")
+            st.info("No rotations detected. Upload a CV or use the form above.")
 
     # TAB 3: PROCEDURES
     with tabs[2]:
-        st.subheader("Procedural Logbook")
+        st.subheader("Procedural Competency")
         
         with st.expander("➕ Log Manual Procedure"):
             with st.form("add_proc"):
-                p_name = st.text_input("Procedure Name")
+                p_name = st.text_input("Procedure")
                 p_lvl = st.selectbox("Competency Level", ["Level 1 (Observed)", "Level 2 (Supervised)", "Level 3 (Independent)"])
-                if st.form_submit_button("Log Procedure"):
+                if st.form_submit_button("Log Skill"):
                     st.session_state.portfolio_data["Procedures"].append({
-                        "Procedure/Entry": p_name, "Competency/Details": p_lvl, "Source": "Manual"
+                        "Entry": p_name, "Details": p_lvl, "Type": "Manual Procedure", "Source": "User"
                     })
         
         if st.session_state.portfolio_data["Procedures"]:
             st.table(pd.DataFrame(st.session_state.portfolio_data["Procedures"]))
-        else:
-            st.info("No procedures logged.")
 
-    # TAB 4: ACADEMIC (Line 197 Fix)
+    # TAB 4: ACADEMIC/QIP
     with tabs[3]:
-        st.subheader("Audits, Teaching & Research")
+        st.subheader("Teaching, Audits & Research")
         
-        with st.expander("➕ Add Academic Entry"):
+        with st.expander("➕ Add Academic Activity"):
             with st.form("add_acad"):
-                a_type = st.selectbox("Type", ["Audit/QIP", "Teaching", "Research", "Publication"])
-                a_title = st.text_input("Title/Description")
-                if st.form_submit_button("Add to Passport"):
+                a_type = st.selectbox("Activity Type", ["Audit/QIP", "Teaching", "Research", "Publication"])
+                a_title = st.text_input("Title/Topic")
+                if st.form_submit_button("Save"):
                     st.session_state.portfolio_data["Academic"].append({
-                        "Type/Entry": a_type, "Title/Details": a_title, "Source": "Manual"
+                        "Entry": a_type, "Details": a_title, "Type": "Manual Academic", "Source": "User"
                     })
         
         if st.session_state.portfolio_data["Academic"]:
             st.table(pd.DataFrame(st.session_state.portfolio_data["Academic"]))
-        else:
-            st.info("No academic entries found.")
 
-    # TAB 5: EXPORT
+    # TAB 5: EXPORT (Jurisdictional Choice)
     with tabs[4]:
-        st.subheader("Jurisdictional Export")
-        st.write("Choose jurisdictions to include in your verified summary:")
+        st.subheader("Generate Global Summary")
+        st.write("Select the jurisdictional standards to include in your final export:")
         
-        inc_uk = st.checkbox("Include UK (GMC) Equivalency Standards", value=True)
-        inc_au = st.checkbox("Include Australia (AMC) Equivalency Standards")
+        c1, c2 = st.columns(2)
+        with c1:
+            inc_uk = st.checkbox("Include UK (GMC) Equivalencies", value=True)
+            inc_au = st.checkbox("Include Australia (AMC) Equivalencies")
+        with c2:
+            inc_us = st.checkbox("Include US (ACGME) Equivalencies")
+            inc_pl = st.checkbox("Include Poland (NIL) Equivalencies")
 
-        if st.button("🛠️ Generate Medical Passport"):
-            all_entries = []
+        if st.button("🛠️ Export Verified Passport"):
+            all_combined = []
             for category in st.session_state.portfolio_data.values():
-                all_entries.extend(category)
+                all_combined.extend(category)
             
-            if all_entries:
-                df_export = pd.DataFrame(all_entries)
+            if all_combined:
+                df_export = pd.DataFrame(all_combined)
                 csv = df_export.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Verified Passport (CSV)", data=csv, file_name="Medical_Passport.csv")
-                st.success("Passport generation complete.")
+                st.download_button("📥 Download Passport (CSV)", data=csv, file_name="Verified_Medical_Passport.csv")
             else:
-                st.error("No data found to export. Please upload a CV or enter data manually.")
+                st.error("No data available to export. Please add clinical data first.")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:

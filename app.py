@@ -79,7 +79,7 @@ def handle_login():
         if res.user:
             st.session_state.authenticated = True
             st.session_state.user_email = st.session_state.login_email
-    except: st.error("Login failed.")
+    except: st.error("Login failed. Check your Supabase credentials.")
 
 def login_screen():
     st.title("🏥 Medical Passport Gateway")
@@ -143,14 +143,13 @@ def main_dashboard():
     with tabs[0]:
         st.subheader("Global Standing Mapping")
         
-        # Determine current tier
         curr_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
         try: t_idx = list(EQUIVALENCY_MAP.keys()).index(curr_tier)
         except: t_idx = 0
         
         selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
         
-        # Defensive check for saved countries list
+        # Load saved countries safely
         raw_c = profile[0].get('selected_countries', []) if profile else ["United Kingdom", "Poland"]
         if isinstance(raw_c, str):
             try: saved_c = json.loads(raw_c)
@@ -159,7 +158,6 @@ def main_dashboard():
             
         active_countries = st.multiselect("Relevant Healthcare Systems", options=list(COUNTRY_KEY_MAP.keys()), default=saved_c)
 
-        # --- RESTORED EQUIVALENCY COMPARISON BOXES ---
         if active_countries:
             st.write("### 🌍 Comparison of Your Role")
             t_data = EQUIVALENCY_MAP[selected_tier]
@@ -170,24 +168,18 @@ def main_dashboard():
             st.info(f"**Responsibilities:** {t_data['Responsibilities']}")
 
         if st.button("💾 Save Preferences"):
-            # Attempting to save as a list first (Standard Supabase JSON/Array)
+            # CRITICAL FIX: Convert list to string to avoid Supabase Type Errors
+            save_data = {
+                "user_email": st.session_state.user_email, 
+                "global_tier": selected_tier, 
+                "selected_countries": json.dumps(active_countries) # Force JSON String
+            }
             try:
-                client.table("profiles").upsert({
-                    "user_email": st.session_state.user_email, 
-                    "global_tier": selected_tier, 
-                    "selected_countries": active_countries
-                }, on_conflict="user_email").execute()
+                client.table("profiles").upsert(save_data, on_conflict="user_email").execute()
                 st.success("Preferences Saved!")
                 st.rerun()
-            except:
-                # Fallback: Save as JSON string if your DB column is strictly text
-                client.table("profiles").upsert({
-                    "user_email": st.session_state.user_email, 
-                    "global_tier": selected_tier, 
-                    "selected_countries": json.dumps(active_countries)
-                }, on_conflict="user_email").execute()
-                st.success("Preferences Saved (String Mode)!")
-                st.rerun()
+            except Exception as e:
+                st.error(f"Save failed. Error details: {e}")
 
     with tabs[1]:
         st.subheader("Clinical Experience")
@@ -206,13 +198,17 @@ def main_dashboard():
                         client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": "Imported", "grade": "Imported"}).execute()
                         st.toast(f"Added {h}")
 
-        if rotations: st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
+        if rotations: 
+            df_rot = pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore')
+            st.table(df_rot)
+            
         with st.form("new_rot", clear_on_submit=True):
             h, s, d, g = st.text_input("Hospital"), st.text_input("Specialty"), st.text_input("Dates"), st.text_input("Grade")
             if st.form_submit_button("Manual Add"):
                 client.table("rotations").insert({"user_email": st.session_state.user_email, "hospital": h, "specialty": s, "dates": d, "grade": g}).execute()
                 st.rerun()
 
+    # (Procedures, Academic, Vault, and Export remain as they were in your functional version)
     with tabs[2]:
         st.subheader("Procedural Log")
         if procedures: st.table(pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore'))
@@ -238,11 +234,12 @@ def main_dashboard():
             client.storage.from_('medical-vault').upload(f"{st.session_state.user_email}/{up.name}", up.getvalue())
             st.success("Saved.")
         files = client.storage.from_('medical-vault').list(st.session_state.user_email)
-        for f in files:
-            c1, c2 = st.columns([0.8, 0.2])
-            c1.write(f"📄 {f['name']}")
-            res = client.storage.from_('medical-vault').create_signed_url(f"{st.session_state.user_email}/{f['name']}", 60)
-            c2.link_button("View", res['signedURL'])
+        if files:
+            for f in files:
+                c1, c2 = st.columns([0.8, 0.2])
+                c1.write(f"📄 {f['name']}")
+                res = client.storage.from_('medical-vault').create_signed_url(f"{st.session_state.user_email}/{f['name']}", 60)
+                c2.link_button("View", res['signedURL'])
 
     with tabs[5]:
         st.subheader("Export PDF")

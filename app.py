@@ -4,6 +4,7 @@ from supabase import create_client
 import google.generativeai as genai
 import pdfplumber
 import docx
+import requests
 import time
 
 # --- 1. CORE CONFIG ---
@@ -17,10 +18,8 @@ try:
     
     if "GEMINI_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    else:
-        st.error("⚠️ GEMINI_API_KEY missing.")
 except Exception as e:
-    st.error(f"Config Error: {e}")
+    st.error(f"Initialization Error: {e}")
 
 # --- 2. SESSION STATE ---
 if 'authenticated' not in st.session_state:
@@ -39,7 +38,7 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 3. EXTRACTION ENGINE ---
+# --- 3. THE AI ENGINES ---
 def get_raw_text(file):
     text = ""
     try:
@@ -53,105 +52,92 @@ def get_raw_text(file):
         return text.strip()
     except: return ""
 
-def run_unified_scan(full_text):
-    # This list covers every naming convention known to cause 404s
-    model_options = [
-        'gemini-2.0-flash', 
-        'models/gemini-2.0-flash', 
-        'gemini-1.5-flash', 
-        'models/gemini-1.5-flash',
-        'gemini-pro'
-    ]
-    
-    prompt = (
-        "Extract all medical career history from this text. "
-        "List hospital names, job titles, and clinical procedures. "
-        "Prefix every finding with 'ITEM: '."
-        f"\n\nCV DATA:\n{full_text[:7000]}"
-    )
+def run_ollama_scan(full_text):
+    """Local Processing - No Quota"""
+    url = "http://localhost:11434/api/generate"
+    prompt = f"Extract all medical jobs and hospitals. Format: 'ITEM: [Job] at [Hospital]'. CV:\n{full_text[:5000]}"
+    payload = {"model": "llama3.2", "prompt": prompt, "stream": False}
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        return response.json().get('response', 'Empty local response.')
+    except:
+        return "ERROR: Ollama not detected. Ensure it is running locally."
 
-    for m_name in model_options:
-        try:
-            model = genai.GenerativeModel(m_name)
-            response = model.generate_content(prompt)
-            if response.text:
-                return response.text
-        except Exception as e:
-            if "404" in str(e) or "not found" in str(e).lower():
-                continue # Try next version
-            return f"API ERROR ({m_name}): {str(e)}"
-            
-    return "ERROR: All model versions (2.0, 1.5, Pro) returned 404. Your API Key may not have Model access enabled in Google AI Studio."
+def run_gemini_scan(full_text):
+    """Cloud Processing - Using Flash-Lite for higher quota"""
+    try:
+        # gemini-1.5-flash-lite is the 'most free' high-throughput model
+        model = genai.GenerativeModel('gemini-1.5-flash-lite')
+        prompt = f"Extract all clinical rotations and hospital roles. Prefix findings with 'ITEM:'. CV:\n{full_text[:8000]}"
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"CLOUD ERROR: {str(e)}"
 
 # --- 4. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Clinical Portfolio")
+        st.header("🛂 Portfolio Control")
         
-        # API Handshake Debug
-        if st.button("🔍 Check Authorized Models"):
-            try:
-                m_list = [m.name for m in genai.list_models()]
-                st.write("Your Key supports:")
-                st.json(m_list)
-            except Exception as e:
-                st.error(f"Cannot list models: {e}")
-
+        # Brain Selection Toggle
+        ai_choice = st.radio("Select AI Engine:", ["Local (Ollama)", "Cloud (Gemini Lite)"])
+        
         st.divider()
-        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
-        manual_text = st.text_area("OR Paste CV Text Here", height=150)
+        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
         
-        target_text = ""
-        if up_file: target_text = get_raw_text(up_file)
-        elif manual_text: target_text = manual_text
-
-        if target_text and st.button("🚀 Sync Medical Portfolio"):
-            with st.spinner("Finding an active Gemini model..."):
-                st.session_state.scraped_text = run_unified_scan(target_text)
+        if up_file:
+            raw_txt = get_raw_text(up_file)
+            if raw_txt and st.button("🚀 Sync Medical History"):
+                with st.spinner(f"Processing via {ai_choice}..."):
+                    if ai_choice == "Local (Ollama)":
+                        st.session_state.scraped_text = run_ollama_scan(raw_txt)
+                    else:
+                        st.session_state.scraped_text = run_gemini_scan(raw_txt)
 
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
-    
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 Diagnostic"])
 
-    # 1. EQUIVALENCY
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 AI Raw Output"])
+
+    # 1. EQUIVALENCY (Doctor-to-Doctor Perspective)
     with tabs[0]:
-        st.subheader("International Grade Mapping")
+        st.subheader("International Grade Translation")
         
+        st.write("This tool ensures that recruiters and medical boards recognize your seniority.")
         st.table(pd.DataFrame([
-            {"Region": "UK", "Equivalent": "Foundation Year 2 (SHO)"},
-            {"Region": "US", "Equivalent": "PGY-2 (Resident)"},
-            {"Region": "Australia", "Equivalent": "Resident Medical Officer"}
+            {"Region": "UK (GMC)", "Grade": "FY2 / SHO", "Status": "Verified"},
+            {"Region": "US (ACGME)", "Grade": "PGY-2 Resident", "Status": "Equivalent"},
+            {"Region": "Australia (AHPRA)", "Grade": "RMO", "Status": "Equivalent"}
         ]))
 
     # 2. CLINICAL RECORDS
     with tabs[1]:
-        st.subheader("Experience & Procedures")
+        st.subheader("Extracted Career Timeline")
         
         if st.session_state.scraped_text:
             items = [l.replace("ITEM:", "").strip() for l in st.session_state.scraped_text.split('\n') if "ITEM:" in l.upper()]
             if items:
                 for item in items:
-                    st.write(f"✅ {item}")
+                    st.write(f"🔹 **{item}**")
             else:
-                st.warning("No 'ITEM:' entries found. See Diagnostic tab.")
+                st.warning("No specific items found. Check 'AI Raw Output' for details.")
         else:
-            st.info("Paste your CV text or upload a file to begin.")
+            st.info("Upload your CV to populate your clinical history.")
 
-    # 3. DIAGNOSTIC
+    # 3. AI RAW OUTPUT
     with tabs[2]:
-        st.subheader("Raw AI Response")
+        st.subheader("Diagnostic Stream")
         if st.session_state.scraped_text:
-            st.text_area("Output Log:", value=st.session_state.scraped_text, height=300)
+            st.text_area("Full Response Log", value=st.session_state.scraped_text, height=400)
         else:
-            st.write("No session data.")
+            st.write("Waiting for data sync...")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:
-    st.title("🏥 Medical Passport Gateway")
+    st.title("🏥 Medical Gateway")
     with st.form("login"):
         st.text_input("Email", key="login_email")
         st.text_input("Password", type="password", key="login_password")

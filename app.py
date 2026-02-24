@@ -39,7 +39,7 @@ try:
     else:
         st.error("⚠️ GEMINI_API_KEY missing.")
 except Exception as e:
-    st.error(f"Configuration Error: {e}")
+    st.error(f"Config Error: {e}")
 
 # --- 2. GLOBAL MAPPING DATA ---
 EQUIVALENCY_MAP = {
@@ -54,8 +54,8 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
-if 'parsed_data' not in st.session_state:
-    st.session_state.parsed_data = {"rotations": [], "procedures": [], "qips": [], "teaching": [], "education": []}
+if 'all_entries' not in st.session_state:
+    st.session_state.all_entries = []
 
 def handle_login():
     try:
@@ -66,7 +66,7 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. ENGINE ---
+# --- 4. THE AGGRESSIVE EXTRACTOR ---
 def get_raw_text(file):
     text = ""
     try:
@@ -80,10 +80,14 @@ def get_raw_text(file):
         return text.strip()
     except: return ""
 
-def ai_process_chunk(chunk_text):
+def ai_extract_clinical_events(chunk_text):
+    # We ask for a simple list of events. This is much easier for the AI to fulfill.
     prompt = (
-        "Extract medical CV data into JSON. Categories: rotations, procedures, qips, teaching, education. "
-        "For rotations, find 'specialty' and 'hospital'. For procedures, find 'name' and 'level'. "
+        "You are a medical scribe. Look at this CV text and list every clinical activity, "
+        "job, procedure, audit, or course you find. "
+        "Return a JSON list of objects called 'events'. "
+        "Each object must have: 'category' (rotation, procedure, qip, teaching, or education), "
+        "'title', 'details', and 'date'. "
         f"\n\nText: {chunk_text}"
     )
     try:
@@ -92,105 +96,105 @@ def ai_process_chunk(chunk_text):
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
-        return json.loads(response.text)
+        data = json.loads(response.text)
+        return data.get("events", [])
     except:
-        return None
+        return []
 
 def run_deep_scan(full_text):
-    combined = {"rotations": [], "procedures": [], "qips": [], "teaching": [], "education": []}
-    segments = [full_text[i:i+3000] for i in range(0, len(full_text), 3000)]
+    all_found = []
+    # 2500 character chunks
+    segments = [full_text[i:i+2500] for i in range(0, len(full_text), 2500)]
     prog = st.progress(0)
+    
     for idx, seg in enumerate(segments):
-        res = ai_process_chunk(seg)
-        if res:
-            for key in combined.keys():
-                if key in res and isinstance(res[key], list):
-                    combined[key].extend(res[key])
+        events = ai_extract_clinical_events(seg)
+        if events:
+            all_found.extend(events)
         prog.progress((idx + 1) / len(segments))
         time.sleep(1)
-    return combined
+        
+    return all_found
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Clinical Portfolio")
-        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
+        st.header("🛂 Doctor-to-Doctor Sync")
+        up_file = st.file_uploader("Upload CV (PDF/DOCX)", type=['pdf', 'docx'])
         if up_file:
-            raw_text = get_raw_text(up_file)
-            if raw_text and st.button("🚀 Run Analysis"):
-                st.session_state.parsed_data = run_deep_scan(raw_text)
-                st.success("Scan Complete.")
+            raw = get_raw_text(up_file)
+            if raw and st.button("🚀 Re-Scan Clinical History"):
+                st.session_state.all_entries = run_deep_scan(raw)
+                if st.session_state.all_entries:
+                    st.success(f"Found {len(st.session_state.all_entries)} clinical records.")
+                else:
+                    st.error("AI scanned the text but couldn't identify specific medical activities. Is the file protected?")
 
+        st.divider()
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
 
-    # Metrics Summary
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Rotations", len(st.session_state.parsed_data.get("rotations", [])))
-    c2.metric("Procedures", len(st.session_state.parsed_data.get("procedures", [])))
-    c3.metric("Audits/QIPs", len(st.session_state.parsed_data.get("qips", [])))
-    c4.metric("Teaching", len(st.session_state.parsed_data.get("teaching", [])))
-    
+    # Filter data for tabs
+    def get_by_cat(cat_list):
+        return [e for e in st.session_state.all_entries if str(e.get('category')).lower() in cat_list]
+
     tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 QIP & Audit", "👨‍🏫 Teaching", "📚 Education"])
 
-    # 1. EQUIVALENCY (Defensive Line 127 fix)
+    # 1. EQUIVALENCY
     with tabs[0]:
         st.subheader("International Seniority Mapping")
         
         profile_db = supabase_client.table("profiles").select("*").eq("user_email", st.session_state.user_email).execute().data
-        curr_tier = "Tier 1: Junior (Intern/FY1)"
-        if profile_db and len(profile_db) > 0:
-            curr_tier = profile_db[0].get('global_tier', curr_tier)
-            
-        selected_tier = st.selectbox("Current Grade", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
-        targets = ["UK", "US", "Australia", "Poland"]
+        curr_tier = profile_db[0].get('global_tier', "Tier 1: Junior (Intern/FY1)") if profile_db else "Tier 1: Junior (Intern/FY1)"
+        selected_tier = st.selectbox("Current Seniority", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
         
         map_data = []
-        for c in targets:
-            equiv = EQUIVALENCY_MAP.get(selected_tier, {}).get(c, "N/A")
-            map_data.append({"Country": c, "Title": equiv})
+        for c in ["UK", "US", "Australia", "Poland"]:
+            map_data.append({"Country": c, "Equivalent Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")})
         st.table(pd.DataFrame(map_data))
 
     # 2. EXPERIENCE
     with tabs[1]:
         st.subheader("Clinical Rotations")
-        for item in st.session_state.parsed_data.get("rotations", []):
-            label = item.get('specialty') or item.get('hospital') or "Medical Placement"
-            with st.expander(f"📍 {label}"):
-                st.write(item)
+        rotations = get_by_cat(["rotation", "experience", "job", "work"])
+        if not rotations: st.info("No rotations identified yet.")
+        for r in rotations:
+            with st.expander(f"🏥 {r.get('title', 'Medical Placement')}"):
+                st.write(f"**Date:** {r.get('date', 'N/A')}")
+                st.write(r.get('details', ''))
 
     # 3. PROCEDURES
     with tabs[2]:
         st.subheader("Procedural Logbook")
         
-        for item in st.session_state.parsed_data.get("procedures", []):
-            name = item.get('name') or item.get('procedure') or "Procedure"
-            lvl = item.get('level') or "N/A"
-            st.write(f"💉 {name} — **{lvl}**")
+        procs = get_by_cat(["procedure", "skill", "clinical skill"])
+        for p in procs:
+            st.write(f"💉 {p.get('title')} — *{p.get('details', 'Logged')}*")
 
     # 4. QIP & AUDIT
     with tabs[3]:
         st.subheader("Quality Improvement")
         
-        for item in st.session_state.parsed_data.get("qips", []):
-            title = item.get('title') or "Audit Project"
-            st.write(f"🔬 {title}")
+        qips = get_by_cat(["qip", "audit", "project"])
+        for q in qips:
+            st.write(f"🔬 **{q.get('title')}** ({q.get('date')})")
 
-    # 5. TEACHING & EDUCATION (Defensive Line 207 fix)
+    # 5. TEACHING
     with tabs[4]:
         st.subheader("Teaching Portfolio")
-        for item in st.session_state.parsed_data.get("teaching", []):
-            t_title = item.get('topic') or item.get('title') or "Teaching Session"
-            st.write(f"👨‍🏫 {t_title}")
+        teaching = get_by_cat(["teaching", "presentation", "lecture"])
+        for t in teaching:
+            st.write(f"👨‍🏫 **{t.get('title')}** — {t.get('details')}")
     
+    # 6. EDUCATION
     with tabs[5]:
         st.subheader("Education & CME")
-        for item in st.session_state.parsed_data.get("education", []):
-            e_title = item.get('course') or item.get('title') or "Course"
-            st.write(f"📚 {e_title}")
+        edu = get_by_cat(["education", "course", "seminar", "degree"])
+        for e in edu:
+            st.write(f"📚 {e.get('title')} ({e.get('date')})")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:

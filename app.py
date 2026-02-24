@@ -54,8 +54,8 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
-if 'all_entries' not in st.session_state:
-    st.session_state.all_entries = []
+if 'raw_records' not in st.session_state:
+    st.session_state.raw_records = []
 
 def handle_login():
     try:
@@ -66,7 +66,7 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. THE AGGRESSIVE EXTRACTOR ---
+# --- 4. THE ULTIMATE SCRAPER ---
 def get_raw_text(file):
     text = ""
     try:
@@ -80,55 +80,55 @@ def get_raw_text(file):
         return text.strip()
     except: return ""
 
-def ai_extract_clinical_events(chunk_text):
-    # We ask for a simple list of events. This is much easier for the AI to fulfill.
+def ai_unstructured_extract(chunk_text):
+    """Tell the AI to be less picky and just grab everything."""
     prompt = (
-        "You are a medical scribe. Look at this CV text and list every clinical activity, "
-        "job, procedure, audit, or course you find. "
-        "Return a JSON list of objects called 'events'. "
-        "Each object must have: 'category' (rotation, procedure, qip, teaching, or education), "
-        "'title', 'details', and 'date'. "
-        f"\n\nText: {chunk_text}"
+        "As a medical recruitment assistant, extract EVERY clinical activity from this text. "
+        "Include jobs, rotations, procedures, audits, teaching, and education. "
+        "Format as a JSON list of objects under the key 'data'. "
+        "Each object must have: 'category', 'title', 'organization', and 'date'. "
+        "Categories must be: 'Rotation', 'Procedure', 'Audit', 'Teaching', or 'Education'. "
+        f"\n\nCV Text: {chunk_text}"
     )
     try:
         response = ai_client.models.generate_content(
             model=MODEL_ID,
             contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json")
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
         )
-        data = json.loads(response.text)
-        return data.get("events", [])
+        return json.loads(response.text).get("data", [])
     except:
         return []
 
 def run_deep_scan(full_text):
-    all_found = []
-    # 2500 character chunks
-    segments = [full_text[i:i+2500] for i in range(0, len(full_text), 2500)]
+    found_data = []
+    # Smaller chunks for high precision
+    segments = [full_text[i:i+2000] for i in range(0, len(full_text), 2000)]
     prog = st.progress(0)
     
     for idx, seg in enumerate(segments):
-        events = ai_extract_clinical_events(seg)
-        if events:
-            all_found.extend(events)
+        res = ai_unstructured_extract(seg)
+        if res:
+            found_data.extend(res)
         prog.progress((idx + 1) / len(segments))
         time.sleep(1)
         
-    return all_found
+    return found_data
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Doctor-to-Doctor Sync")
-        up_file = st.file_uploader("Upload CV (PDF/DOCX)", type=['pdf', 'docx'])
+        st.header("🏥 Doctor Portfolio Sync")
+        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
         if up_file:
-            raw = get_raw_text(up_file)
-            if raw and st.button("🚀 Re-Scan Clinical History"):
-                st.session_state.all_entries = run_deep_scan(raw)
-                if st.session_state.all_entries:
-                    st.success(f"Found {len(st.session_state.all_entries)} clinical records.")
-                else:
-                    st.error("AI scanned the text but couldn't identify specific medical activities. Is the file protected?")
+            txt = get_raw_text(up_file)
+            if txt and st.button("🚀 Force Clinical Extraction"):
+                with st.spinner("AI is scraping clinical data..."):
+                    st.session_state.raw_records = run_deep_scan(txt)
+                    if st.session_state.raw_records:
+                        st.success(f"Successfully scraped {len(st.session_state.raw_records)} clinical items.")
+                    else:
+                        st.warning("AI found text but no items. Try a version of your CV with less formatting.")
 
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
@@ -137,11 +137,8 @@ def main_dashboard():
 
     st.title("🩺 Global Medical Passport")
 
-    # Filter data for tabs
-    def get_by_cat(cat_list):
-        return [e for e in st.session_state.all_entries if str(e.get('category')).lower() in cat_list]
-
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 QIP & Audit", "👨‍🏫 Teaching", "📚 Education"])
+    # Layout for Clinical Data
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 QIP/Audits", "👨‍🏫 Portfolio Review"])
 
     # 1. EQUIVALENCY
     with tabs[0]:
@@ -153,52 +150,44 @@ def main_dashboard():
         
         map_data = []
         for c in ["UK", "US", "Australia", "Poland"]:
-            map_data.append({"Country": c, "Equivalent Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")})
+            map_data.append({"Country": c, "Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")})
         st.table(pd.DataFrame(map_data))
 
-    # 2. EXPERIENCE
+    # 2. CLINICAL RECORDS (Rotation + Procedures combined for visibility)
     with tabs[1]:
-        st.subheader("Clinical Rotations")
-        rotations = get_by_cat(["rotation", "experience", "job", "work"])
-        if not rotations: st.info("No rotations identified yet.")
-        for r in rotations:
-            with st.expander(f"🏥 {r.get('title', 'Medical Placement')}"):
+        st.subheader("Extracted Clinical Experience")
+        records = [r for r in st.session_state.raw_records if r.get('category') in ['Rotation', 'Procedure']]
+        if not records: st.info("No rotations or procedures identified yet.")
+        for r in records:
+            icon = "🏥" if r.get('category') == 'Rotation' else "💉"
+            with st.expander(f"{icon} {r.get('title')} - {r.get('organization')}"):
                 st.write(f"**Date:** {r.get('date', 'N/A')}")
-                st.write(r.get('details', ''))
+                st.write(f"**Category:** {r.get('category')}")
 
-    # 3. PROCEDURES
+    # 3. QIP & AUDITS
     with tabs[2]:
-        st.subheader("Procedural Logbook")
+        st.subheader("Quality Improvement & Research")
         
-        procs = get_by_cat(["procedure", "skill", "clinical skill"])
-        for p in procs:
-            st.write(f"💉 {p.get('title')} — *{p.get('details', 'Logged')}*")
-
-    # 4. QIP & AUDIT
-    with tabs[3]:
-        st.subheader("Quality Improvement")
-        
-        qips = get_by_cat(["qip", "audit", "project"])
+        qips = [r for r in st.session_state.raw_records if r.get('category') == 'Audit']
         for q in qips:
             st.write(f"🔬 **{q.get('title')}** ({q.get('date')})")
 
-    # 5. TEACHING
-    with tabs[4]:
-        st.subheader("Teaching Portfolio")
-        teaching = get_by_cat(["teaching", "presentation", "lecture"])
-        for t in teaching:
-            st.write(f"👨‍🏫 **{t.get('title')}** — {t.get('details')}")
-    
-    # 6. EDUCATION
-    with tabs[5]:
-        st.subheader("Education & CME")
-        edu = get_by_cat(["education", "course", "seminar", "degree"])
-        for e in edu:
-            st.write(f"📚 {e.get('title')} ({e.get('date')})")
+    # 4. PORTFOLIO REVIEW (The "Safety" view)
+    with tabs[3]:
+        st.subheader("Raw AI Findings")
+        st.write("This tab shows everything the AI found, regardless of how it was categorized.")
+        if st.session_state.raw_records:
+            df = pd.DataFrame(st.session_state.raw_records)
+            st.dataframe(df, use_container_width=True)
+            if st.button("💾 Push All to Database"):
+                # Logic to push to Supabase
+                st.toast("Syncing with Cloud Database...")
+        else:
+            st.warning("No raw data to display.")
 
-# --- LOGIN ---
+# --- LOGIN GATE ---
 if not st.session_state.authenticated:
-    st.title("🏥 Medical Gateway")
+    st.title("🏥 Medical Passport Gateway")
     with st.form("login"):
         st.text_input("Email", key="login_email")
         st.text_input("Password", type="password", key="login_password")

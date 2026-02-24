@@ -6,7 +6,6 @@ from google.genai import types
 import pdfplumber
 import docx
 import json
-import io
 import re
 import time
 
@@ -56,10 +55,7 @@ if 'authenticated' not in st.session_state:
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
 if 'parsed_data' not in st.session_state:
-    st.session_state.parsed_data = {
-        "rotations": [], "procedures": [], "qips": [], 
-        "teaching": [], "education": [], "publications": []
-    }
+    st.session_state.parsed_data = {"rotations": [], "procedures": [], "qips": [], "teaching": [], "education": []}
 
 def handle_login():
     try:
@@ -70,86 +66,74 @@ def handle_login():
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 4. IMPROVED EXTRACTION & CHUNKING ---
-def get_raw_text_robust(file):
-    """Extraction with fallback to catch dense medical layouts."""
+# --- 4. ROBUST EXTRACTION & SMART CHUNKING ---
+def get_raw_text(file):
     text = ""
     try:
         if file.name.endswith('.pdf'):
             with pdfplumber.open(file) as pdf:
                 for page in pdf.pages:
-                    # Try layout-aware extraction first
-                    page_text = page.extract_text(layout=True)
-                    if page_text:
-                        text += page_text + "\n"
+                    text += page.extract_text() + "\n"
         elif file.name.endswith('.docx'):
             doc = docx.Document(file)
             text = "\n".join([p.text for p in doc.paragraphs])
-        
-        # Clean up only non-printable characters, keep structure
-        text = "".join(char for char in text if char.isprintable() or char in '\n\r\t ')
         return text.strip()
-    except Exception as e:
-        st.error(f"File Read Error: {e}")
-        return ""
+    except: return ""
 
-def process_chunk_v2(chunk_text):
-    """Modified prompt to force non-empty lists."""
+def ai_process_chunk(chunk_text):
+    # A more "desperate" prompt that tells the AI to find ANYTHING medical.
     prompt = (
-        "You are a medical CV parser. Extract all clinical details into a JSON object. "
-        "Keys: rotations, procedures, qips, teaching, education, publications. "
-        "If you find a rotation, put it in 'rotations'. If you find a skill, put it in 'procedures'. "
-        "NEVER leave a list empty if there is data. Format everything as a list of objects. "
-        f"Text to parse: {chunk_text}"
+        "Identify every medical detail in this text. "
+        "Sort them into these categories: rotations, procedures, qips, teaching, education. "
+        "Even if a detail is vague, include it. Use generic field names. "
+        "Return ONLY valid JSON."
+        f"\n\nText: {chunk_text}"
     )
     try:
         response = ai_client.models.generate_content(
             model=MODEL_ID,
             contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.1
-            )
+            config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         return json.loads(response.text)
     except:
         return None
 
-def run_automated_scan(full_text):
-    combined = {k: [] for k in st.session_state.parsed_data.keys()}
-    # Smaller chunks (1500 chars) for better focus
-    chunks = [full_text[i:i+1500] for i in range(0, len(full_text), 1500)]
+def run_deep_scan(full_text):
+    combined = {"rotations": [], "procedures": [], "qips": [], "teaching": [], "education": []}
+    # Break into 3000-character segments
+    segments = [full_text[i:i+3000] for i in range(0, len(full_text), 3000)]
     
     prog = st.progress(0)
-    for idx, chunk in enumerate(chunks):
-        res = process_chunk_v2(chunk)
+    status = st.empty()
+    
+    for idx, seg in enumerate(segments):
+        status.text(f"Scanning Section {idx+1} of {len(segments)}...")
+        res = ai_process_chunk(seg)
         if res:
             for key in combined:
                 if key in res and isinstance(res[key], list):
                     combined[key].extend(res[key])
-        prog.progress((idx + 1) / len(chunks))
-        time.sleep(1) # Rate limit protection
+        prog.progress((idx + 1) / len(segments))
+        time.sleep(1)
+        
+    status.text("Scan Complete.")
     return combined
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Clinical Portfolio")
-        up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
+        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
         
         if up_file:
-            raw_text = get_raw_text_robust(up_file)
+            raw_text = get_raw_text(up_file)
             if raw_text:
-                st.success(f"File loaded: {len(raw_text)} characters.")
-                with st.expander("🔍 Preview Extracted Text"):
-                    st.text(raw_text[:500] + "...")
-                
-                if st.button("🚀 Start AI Synthesis"):
-                    with st.spinner("Analyzing clinical data..."):
-                        st.session_state.parsed_data = run_automated_scan(raw_text)
-                        st.success("Synthesis Complete!")
+                st.success("File Content Extracted.")
+                if st.button("🚀 Run Deep Clinical Scan"):
+                    st.session_state.parsed_data = run_deep_scan(raw_text)
             else:
-                st.error("No text could be extracted from this file.")
+                st.error("No text found in file.")
 
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
@@ -158,7 +142,7 @@ def main_dashboard():
 
     st.title("🩺 Global Medical Passport")
     
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 QIP & Audit", "👨‍🏫 Teaching", "📚 Education", "📄 Raw Debug"])
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 QIP & Audit", "👨‍🏫 Teaching", "📚 Education"])
 
     # 1. EQUIVALENCY
     with tabs[0]:
@@ -166,7 +150,7 @@ def main_dashboard():
         
         profile_db = supabase_client.table("profiles").select("*").eq("user_email", st.session_state.user_email).execute().data
         curr_tier = profile_db[0].get('global_tier', "Tier 1: Junior (Intern/FY1)") if profile_db else "Tier 1: Junior (Intern/FY1)"
-        selected_tier = st.selectbox("Current Tier", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
+        selected_tier = st.selectbox("Current Level", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
         
         targets = ["UK", "US", "Australia", "Poland"]
         map_data = [{"Country": c, "Title": EQUIVALENCY_MAP[selected_tier].get(c, "N/A")} for c in targets]
@@ -175,54 +159,49 @@ def main_dashboard():
     # 2. EXPERIENCE
     with tabs[1]:
         st.subheader("Clinical Rotations")
-        data = st.session_state.parsed_data.get("rotations", [])
-        if not data: st.info("Nothing detected. Please check 'Raw Debug' tab.")
-        for item in data:
-            title = item.get('specialty') or item.get('title') or item.get('role') or "Unknown Role"
-            hosp = item.get('hospital') or item.get('location') or "Unknown Hospital"
-            with st.expander(f"🏥 {title}"):
-                st.write(f"**At:** {hosp} | **Dates:** {item.get('dates', 'N/A')}")
-                st.write(item.get('description', ''))
+        items = st.session_state.parsed_data.get("rotations", [])
+        if not items: st.warning("AI did not label any 'rotations'. Check your file for keywords like 'Resident', 'Intern', or 'Department'.")
+        for i, item in enumerate(items):
+            # Dynamic Labeling: Show whatever data is available
+            label = next((item[k] for k in ['specialty', 'title', 'role', 'department'] if k in item), f"Experience {i+1}")
+            with st.expander(f"📍 {label}"):
+                st.write(item)
 
     # 3. PROCEDURES
     with tabs[2]:
         st.subheader("Procedural Logbook")
         
-        data = st.session_state.parsed_data.get("procedures", [])
-        if not data: st.info("Nothing detected.")
-        for item in data:
-            name = item.get('name') or item.get('procedure') or item.get('skill', 'Procedure')
-            lvl = item.get('level') or item.get('competency', 'N/A')
+        items = st.session_state.parsed_data.get("procedures", [])
+        if not items: st.info("No procedures identified.")
+        for item in items:
+            name = next((item[k] for k in ['name', 'procedure', 'skill'] if k in item), "Medical Procedure")
+            lvl = next((item[k] for k in ['level', 'competency', 'status'] if k in item), "N/A")
             st.write(f"💉 {name} — **{lvl}**")
 
     # 4. QIP & AUDIT
     with tabs[3]:
         st.subheader("Quality Improvement")
         
-        data = st.session_state.parsed_data.get("qips", [])
-        for item in data:
-            st.write(f"🔬 **{item.get('title', 'Project')}**")
+        items = st.session_state.parsed_data.get("qips", [])
+        for item in items:
+            st.write(f"🔬 {item}")
 
     # 5. TEACHING & EDUCATION
     with tabs[4]:
         for item in st.session_state.parsed_data.get("teaching", []):
-            st.write(f"👨‍🏫 {item.get('topic') or item.get('title', 'Teaching Session')}")
+            st.write(f"👨‍🏫 {item}")
     
     with tabs[5]:
         for item in st.session_state.parsed_data.get("education", []):
-            st.write(f"📚 {item.get('course') or item.get('title', 'Education')} ({item.get('year', 'N/A')})")
-
-    # 6. DEBUG
-    with tabs[6]:
-        st.write("AI Output JSON:")
-        st.json(st.session_state.parsed_data)
+            st.write(f"📚 {item}")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:
-    st.title("🏥 Medical Passport Gateway")
+    st.title("🏥 Medical Gateway")
     with st.form("login"):
         st.text_input("Email", key="login_email")
         st.text_input("Password", type="password", key="login_password")
         st.form_submit_button("Sign In", on_click=handle_login)
 else:
+    main_dashboard()
     main_dashboard()

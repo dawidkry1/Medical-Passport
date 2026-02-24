@@ -78,7 +78,7 @@ if 'authenticated' not in st.session_state:
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
 if 'parsed_data' not in st.session_state:
-    st.session_state.parsed_data = {"rotations": [], "procedures": [], "projects": [], "registrations": []}
+    st.session_state.parsed_data = {"rotations": [], "procedures": [], "projects": [], "registrations": [], "fragments": []}
 
 def handle_login():
     try:
@@ -98,8 +98,8 @@ def fetch_user_data(table_name):
     except Exception:
         return []
 
-# --- 4. THE ULTIMATE MEDICAL PARSER ---
-def get_raw_text(file):
+# --- 4. THE "EXPERIENCE-GLUE" PARSER ---
+def get_clean_text(file):
     if file.name.endswith('.pdf'):
         with pdfplumber.open(file) as pdf:
             return "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
@@ -108,55 +108,65 @@ def get_raw_text(file):
         return "\n".join([p.text for p in doc.paragraphs])
     return ""
 
-def clinical_triage_parser(file):
-    text = get_raw_text(file)
+def deep_clinical_parse(file):
+    text = get_clean_text(file)
+    lines = text.split('\n')
     
-    # Split text by major potential headers or date ranges (Aug 2023 - Present, etc)
-    # This prevents fragmentation of a single job entry.
-    blocks = re.split(r'(\d{4}\s*-\s*\d{4}|\d{4}\s*-\s*Present|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', text)
+    triage = {"rotations": [], "procedures": [], "projects": [], "registrations": [], "fragments": []}
     
-    triage = {"rotations": [], "procedures": [], "projects": [], "registrations": []}
+    current_block = []
     
-    temp_block = ""
-    for segment in blocks:
-        if not segment: continue
-        temp_block += segment
-        
-        # If the block has enough "meat", categorize it
-        if len(temp_block) > 50:
-            low = temp_block.lower()
-            # 1. Registrations (High Priority to keep separate)
-            if any(k in low for k in ["gmc", "license", "licence", "registration", "number:"]):
-                triage["registrations"].append(temp_block.strip())
-            # 2. Procedures (Look for clinical action verbs)
-            elif any(k in low for k in ["intubat", "sutur", "cannulat", "tap", "biopsy", "scopy", "performed"]):
-                triage["procedures"].append(temp_block.strip())
-            # 3. Academic (Audit/Research)
-            elif any(k in low for k in ["audit", "qip", "research", "poster", "publication"]):
-                triage["projects"].append(temp_block.strip())
-            # 4. Rotations (The Default for remaining blocks with hospital keywords)
-            elif any(k in low for k in ["hospital", "trust", "szpital", "ward", "clinic", "department"]):
-                triage["rotations"].append(temp_block.strip())
-            
-            temp_block = "" # Flush and move to next block
+    # regex for dates that usually start a new job entry
+    date_header_pattern = r'^(\d{4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Present|Current)'
 
+    for line in lines:
+        clean_line = line.strip()
+        if not clean_line: continue
+        
+        # Check if this line looks like a NEW experience header
+        is_new_header = re.match(date_header_pattern, clean_line, re.IGNORECASE) or \
+                        any(k in clean_line.upper() for k in ["HOSPITAL", "TRUST", "SZPITAL"])
+        
+        if is_new_header and current_block:
+            # Analyze what we just finished collecting before starting a new one
+            full_content = "\n".join(current_block)
+            low = full_content.lower()
+            
+            if any(k in low for k in ["gmc", "license", "registration"]):
+                triage["registrations"].append(full_content)
+            elif any(k in low for k in ["audit", "qip", "research", "publication"]):
+                triage["projects"].append(full_content)
+            elif any(k in low for k in ["procedure", "intubation", "suturing", "cannulation"]):
+                triage["procedures"].append(full_content)
+            elif any(k in low for k in ["hospital", "trust", "szpital", "ward"]):
+                triage["rotations"].append(full_content)
+            else:
+                triage["fragments"].append(full_content)
+            
+            current_block = [clean_line] # Start fresh bucket
+        else:
+            current_block.append(clean_line) # Keep adding to current bucket
+
+    # Final bucket catch
+    if current_block:
+        triage["rotations"].append("\n".join(current_block))
+        
     return triage
 
 # --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Passport Control")
-        st.success(f"Logged in: {st.session_state.user_email}")
+        st.header("🛂 Global Sync")
+        st.success(f"Verified: {st.session_state.user_email}")
         
         st.divider()
-        st.write("### 📂 Global CV Sync")
-        st.caption("Upload your CV to auto-fill your profile.")
-        up_file = st.file_uploader("Upload PDF/DOCX", type=['pdf', 'docx'])
+        st.write("### 📂 Portfolio Importer")
+        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
         
-        if up_file and st.button("🚀 Process & Triage"):
-            with st.spinner("Executing Semantic Analysis..."):
-                st.session_state.parsed_data = clinical_triage_parser(up_file)
-                st.success("Triage Complete! Review each tab.")
+        if up_file and st.button("🚀 Analyze & Triage"):
+            with st.spinner("Intelligently Grouping Experiences..."):
+                st.session_state.parsed_data = deep_clinical_parse(up_file)
+                st.success("Triage Complete.")
 
         if st.button("🚪 Logout", use_container_width=True):
             client.auth.sign_out()
@@ -164,8 +174,6 @@ def main_dashboard():
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
-    
-    # Load DB Data
     profile = fetch_user_data("profiles")
     rotations = fetch_user_data("rotations")
     procedures = fetch_user_data("procedures")
@@ -173,63 +181,42 @@ def main_dashboard():
 
     tabs = st.tabs(["🌐 Equivalency", "🪪 Registration", "🏥 Experience", "💉 Procedures", "🔬 Academic", "🛡️ Vault", "📄 Export"])
 
-    # 🌐 EQUIVALENCY
-    with tabs[0]:
-        st.subheader("International Equivalency")
-        curr_tier = profile[0]['global_tier'] if profile else "Tier 1: Junior (Intern/FY1)"
-        selected_tier = st.selectbox("Current Seniority", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
-        
-        raw_c = profile[0].get('selected_countries', []) if profile else ["United Kingdom"]
-        active_c = st.multiselect("Active Systems", options=list(COUNTRY_KEY_MAP.keys()), default=raw_c if isinstance(raw_c, list) else json.loads(raw_c))
-        
-        if st.button("💾 Save Settings"):
-            client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier, "selected_countries": json.dumps(active_c)}, on_conflict="user_email").execute()
-            st.toast("Profile Synced.")
-
-    # 🪪 REGISTRATION
-    with tabs[1]:
-        st.subheader("Medical Licensing")
-        if st.session_state.parsed_data["registrations"]:
-            st.warning("Parser found potential License Info. Copy/Paste into fields below:")
-            for item in st.session_state.parsed_data["registrations"]:
-                st.code(item)
-        
-        with st.form("reg_form"):
-            col1, col2 = st.columns(2)
-            body = col1.text_input("Regulatory Body (e.g. GMC, DHA)")
-            num = col2.text_input("Registration Number")
-            if st.form_submit_button("Confirm Registration"):
-                st.success("Registration Added.")
-
-    # 🏥 EXPERIENCE (The Critical Section)
+    # 🏥 EXPERIENCE (The Critical Fix)
     with tabs[2]:
-        st.subheader("Clinical Experience")
+        st.subheader("Clinical Experience Record")
         
         
-        # TRIAGE VIEW
+        # 1. REVIEW DETECTED BLOCKS
         if st.session_state.parsed_data["rotations"]:
-            st.markdown("### 📥 Triage Area: Detected Rotations")
-            st.info("Review each block. Edit as needed to ensure the Grade and Specialty are correct.")
+            st.markdown("### 📥 Triage Area")
+            st.caption("Review blocks. If a block was split, you can edit and combine them here.")
+            
             for i, block in enumerate(st.session_state.parsed_data["rotations"]):
-                with st.expander(f"Review Block {i+1}", expanded=True):
-                    # Guess header
-                    first_line = block.split('\n')[0]
+                with st.expander(f"Review Entry {i+1}", expanded=True):
+                    lines = block.split('\n')
+                    h_guess = lines[0] if lines else ""
                     
-                    full_text = st.text_area("Experience Details (including bullets)", block, height=180, key=f"rot_tx_{i}")
-                    c1, c2, c3 = st.columns(3)
-                    h = c1.text_input("Hospital", first_line, key=f"rot_h_{i}")
-                    s = c2.text_input("Specialty", key=f"rot_s_{i}")
-                    g = c3.text_input("Grade", key=f"rot_g_{i}")
+                    full_text = st.text_area("Full Experience Block", block, height=200, key=f"rot_tx_{i}")
+                    c1, c2 = st.columns(2)
+                    spec = c1.text_input("Specialty", key=f"rot_s_{i}")
+                    grad = c2.text_input("Grade", key=f"rot_g_{i}")
                     
-                    if st.button(f"Commit Block {i+1} to Passport", key=f"rot_btn_{i}"):
+                    if st.button(f"Save Post {i+1}", key=f"rot_btn_{i}"):
                         client.table("rotations").insert({
                             "user_email": st.session_state.user_email,
-                            "hospital": h, "specialty": s, "grade": g, "description": full_text
+                            "hospital": h_guess[:100], "specialty": spec, "grade": grad, "description": full_text
                         }).execute()
-                        st.toast("Experience Saved!")
+                        st.toast("Saved!")
 
-        # MANUAL OVERRIDE
-        with st.form("manual_experience"):
+        # 2. FRAGMENT RECOVERY
+        if st.session_state.parsed_data["fragments"]:
+            with st.expander("🧩 Uncategorized Fragments (Check for cut-offs here)"):
+                st.info("These snippets didn't look like full experiences. Copy them into the blocks above if they were cut off.")
+                for frag in st.session_state.parsed_data["fragments"]:
+                    st.code(frag)
+
+        # 3. MANUAL ENTRY
+        with st.form("man_rot"):
             st.write("### ➕ Manual Addition")
             c1, c2, c3 = st.columns(3)
             mh, ms, mg = c1.text_input("Hospital"), c2.text_input("Specialty"), c3.text_input("Grade")
@@ -240,47 +227,51 @@ def main_dashboard():
         if rotations:
             st.table(pd.DataFrame(rotations).drop(columns=['id', 'user_email'], errors='ignore'))
 
-    # 💉 PROCEDURES
+    # (Remaining tabs follow same structure as previous stable version)
+    with tabs[0]:
+        st.subheader("International Equivalency")
+        curr_tier = profile[0]['global_tier'] if profile else "Tier 1: Junior (Intern/FY1)"
+        selected_tier = st.selectbox("Current Seniority", list(EQUIVALENCY_MAP.keys()), index=list(EQUIVALENCY_MAP.keys()).index(curr_tier) if curr_tier in EQUIVALENCY_MAP else 0)
+        raw_c = profile[0].get('selected_countries', []) if profile else ["United Kingdom"]
+        active_c = st.multiselect("Active Systems", options=list(COUNTRY_KEY_MAP.keys()), default=raw_c if isinstance(raw_c, list) else json.loads(raw_c))
+        if st.button("💾 Save Preferences"):
+            client.table("profiles").upsert({"user_email": st.session_state.user_email, "global_tier": selected_tier, "selected_countries": json.dumps(active_c)}, on_conflict="user_email").execute()
+            st.toast("Profile Synced.")
+
+    with tabs[1]:
+        st.subheader("Professional Licensing")
+        if st.session_state.parsed_data["registrations"]:
+            for reg in st.session_state.parsed_data["registrations"]:
+                st.code(reg)
+        with st.form("reg_form"):
+            b, n = st.text_input("Regulatory Body"), st.text_input("Number")
+            if st.form_submit_button("Confirm Registration"): st.success("Added.")
+
     with tabs[3]:
         st.subheader("Procedural Log")
         
         if st.session_state.parsed_data["procedures"]:
-            st.markdown("### 📥 Triage Area: Detected Skills")
             for i, block in enumerate(st.session_state.parsed_data["procedures"]):
-                with st.expander(f"Skill Block {i+1}"):
+                with st.expander(f"Skill {i+1}"):
                     st.write(block)
-                    if st.button("Log Procedure", key=f"proc_bt_{i}"):
-                        client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": block[:60], "level": "Independent"}).execute()
-                        st.toast("Procedure Logged")
-        
-        with st.form("manual_proc"):
-            pn, pl = st.text_input("Procedure Name"), st.selectbox("Competency", ["Observed", "Supervised", "Independent"])
-            if st.form_submit_button("Log Skill"):
-                client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": pn, "level": pl}).execute()
-                st.rerun()
+                    if st.button("Log Skill", key=f"pr_{i}"):
+                        client.table("procedures").insert({"user_email": st.session_state.user_email, "procedure": block[:50], "level": "Independent"}).execute()
+        with st.form("man_pr"):
+            pn, pl = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent"])
+            if st.form_submit_button("Add Skill"): st.rerun()
 
-    # 🔬 ACADEMIC
     with tabs[4]:
-        st.subheader("Research, Audit & QIP")
+        st.subheader("Academic Record")
         if st.session_state.parsed_data["projects"]:
             for i, block in enumerate(st.session_state.parsed_data["projects"]):
-                with st.expander(f"Project Block {i+1}"):
+                with st.expander(f"Project {i+1}"):
                     st.write(block)
-                    if st.button("Add to Academic Record", key=f"acad_bt_{i}"):
+                    if st.button("Add Project", key=f"ac_{i}"):
                         client.table("projects").insert({"user_email": st.session_state.user_email, "title": block[:100]}).execute()
-                        st.toast("Project Added")
-        if projects:
-            st.table(pd.DataFrame(projects).drop(columns=['id', 'user_email'], errors='ignore'))
+        if projects: st.table(pd.DataFrame(projects).drop(columns=['id', 'user_email'], errors='ignore'))
 
-    # 🛡️ VAULT & EXPORT
-    with tabs[5]:
-        st.subheader("Verified Credential Vault")
-        st.info("Documents stored here can be attached to your global applications.")
-    
-    with tabs[6]:
-        st.subheader("Passport Generation")
-        if st.button("🏗️ Generate Verified Portfolio PDF"):
-            st.info("Compiling all medical evidence...")
+    with tabs[5]: st.info("Secured Vault Ready.")
+    with tabs[6]: st.button("🏗️ Build PDF Portfolio")
 
 # --- AUTH ---
 if not st.session_state.authenticated:

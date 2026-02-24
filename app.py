@@ -54,12 +54,20 @@ def get_raw_text(file):
     except: return ""
 
 def run_unified_scan(full_text):
-    # Try current stable 2.0 first, then fallbacks
-    model_options = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-pro']
+    # This list covers every naming convention known to cause 404s
+    model_options = [
+        'gemini-2.0-flash', 
+        'models/gemini-2.0-flash', 
+        'gemini-1.5-flash', 
+        'models/gemini-1.5-flash',
+        'gemini-pro'
+    ]
+    
     prompt = (
-        "Identify clinical rotations, hospitals, and procedures in this CV. "
-        "Format as: 'ITEM: [Title] at [Hospital]'. "
-        f"\n\nCV Text:\n{full_text[:7000]}"
+        "Extract all medical career history from this text. "
+        "List hospital names, job titles, and clinical procedures. "
+        "Prefix every finding with 'ITEM: '."
+        f"\n\nCV DATA:\n{full_text[:7000]}"
     )
 
     for m_name in model_options:
@@ -69,39 +77,37 @@ def run_unified_scan(full_text):
             if response.text:
                 return response.text
         except Exception as e:
-            if "404" in str(e):
-                continue # Try the next model name
+            if "404" in str(e) or "not found" in str(e).lower():
+                continue # Try next version
             return f"API ERROR ({m_name}): {str(e)}"
             
-    return "ERROR: All available Gemini models returned 404. Check API Key permissions."
+    return "ERROR: All model versions (2.0, 1.5, Pro) returned 404. Your API Key may not have Model access enabled in Google AI Studio."
 
 # --- 4. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
         st.header("🛂 Clinical Portfolio")
         
-        # Connection Health Check
-        if st.button("🧪 Connection Health Check"):
+        # API Handshake Debug
+        if st.button("🔍 Check Authorized Models"):
             try:
-                # Try the list call to see what models are actually enabled
-                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                st.write("Authorized Models:")
-                st.write(models)
+                m_list = [m.name for m in genai.list_models()]
+                st.write("Your Key supports:")
+                st.json(m_list)
             except Exception as e:
-                st.error(f"Handshake Failed: {e}")
+                st.error(f"Cannot list models: {e}")
 
         st.divider()
         up_file = st.file_uploader("Upload CV", type=['pdf', 'docx'])
+        manual_text = st.text_area("OR Paste CV Text Here", height=150)
         
-        if up_file:
-            raw_txt = get_raw_text(up_file)
-            if raw_txt:
-                st.info(f"Loaded {len(raw_txt)} chars.")
-                if st.button("🚀 Sync Clinical Portfolio"):
-                    with st.spinner("Routing to active model..."):
-                        st.session_state.scraped_text = run_unified_scan(raw_txt)
-            else:
-                st.error("No text found.")
+        target_text = ""
+        if up_file: target_text = get_raw_text(up_file)
+        elif manual_text: target_text = manual_text
+
+        if target_text and st.button("🚀 Sync Medical Portfolio"):
+            with st.spinner("Finding an active Gemini model..."):
+                st.session_state.scraped_text = run_unified_scan(target_text)
 
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
@@ -109,13 +115,12 @@ def main_dashboard():
 
     st.title("🩺 Global Medical Passport")
     
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 Raw Data"])
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 Diagnostic"])
 
     # 1. EQUIVALENCY
     with tabs[0]:
         st.subheader("International Grade Mapping")
         
-        st.info("Mapping identifies your grade for international registration (GMC, AMC, AHPRA).")
         st.table(pd.DataFrame([
             {"Region": "UK", "Equivalent": "Foundation Year 2 (SHO)"},
             {"Region": "US", "Equivalent": "PGY-2 (Resident)"},
@@ -124,7 +129,7 @@ def main_dashboard():
 
     # 2. CLINICAL RECORDS
     with tabs[1]:
-        st.subheader("Experience & Logbook")
+        st.subheader("Experience & Procedures")
         
         if st.session_state.scraped_text:
             items = [l.replace("ITEM:", "").strip() for l in st.session_state.scraped_text.split('\n') if "ITEM:" in l.upper()]
@@ -132,17 +137,17 @@ def main_dashboard():
                 for item in items:
                     st.write(f"✅ {item}")
             else:
-                st.warning("Analysis complete, but no 'ITEM:' tags found. Review Raw Data tab.")
+                st.warning("No 'ITEM:' entries found. See Diagnostic tab.")
         else:
-            st.info("Upload your CV to populate your medical passport.")
+            st.info("Paste your CV text or upload a file to begin.")
 
-    # 3. RAW DATA
+    # 3. DIAGNOSTIC
     with tabs[2]:
-        st.subheader("AI System Output")
+        st.subheader("Raw AI Response")
         if st.session_state.scraped_text:
-            st.text_area("Full Response:", value=st.session_state.scraped_text, height=300)
+            st.text_area("Output Log:", value=st.session_state.scraped_text, height=300)
         else:
-            st.write("No active session data.")
+            st.write("No session data.")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:

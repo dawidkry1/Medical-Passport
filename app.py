@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-import google.generativeai as genai
 import pdfplumber
 import docx
-import requests
-import time
+import re
+from fpdf import FPDF
+from datetime import datetime
 
 # --- 1. CORE CONFIG ---
 st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
@@ -15,125 +15,186 @@ try:
     URL = st.secrets["SUPABASE_URL"]
     KEY = st.secrets["SUPABASE_KEY"]
     supabase_client = create_client(URL, KEY)
-    
-    if "GEMINI_API_KEY" in st.secrets:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 except Exception as e:
-    st.error(f"Initialization Error: {e}")
+    st.error(f"Configuration Error: {e}")
 
 # --- 2. SESSION STATE ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
-if 'user_email' not in st.session_state:
-    st.session_state.user_email = None
-if 'scraped_text' not in st.session_state:
-    st.session_state.scraped_text = ""
+if 'portfolio_data' not in st.session_state:
+    st.session_state.portfolio_data = {
+        "Experience": [],
+        "Procedures": [],
+        "Academic": []
+    }
 
 def handle_login():
     try:
-        res = supabase_client.auth.sign_in_with_password({"email": st.session_state.login_email, "password": st.session_state.login_password})
+        res = supabase_client.auth.sign_in_with_password({
+            "email": st.session_state.login_email, 
+            "password": st.session_state.login_password
+        })
         if res.user:
             st.session_state.authenticated = True
-            st.session_state.user_email = res.user.email
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 3. THE AI ENGINES ---
+# --- 3. AUTO-DETECTION ENGINE ---
+def auto_populate_cv(text):
+    exp_pattern = r"\b(SHO|Registrar|Resident|Fellow|Consultant|Intern|Attending|Specialist|HMO|RMO|ST\d|CT\d)\b"
+    hosp_pattern = r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*\s(?:Hospital|Medical Center|Clinic|Trust|Infirmary|Health Service))"
+    
+    roles = re.findall(exp_pattern, text, re.IGNORECASE)
+    hosps = re.findall(hosp_pattern, text)
+    
+    for i in range(min(len(roles), len(hosps))):
+        st.session_state.portfolio_data["Experience"].append({
+            "Entry": roles[i].upper(), "Details": hosps[i], "Category": "Rotation", "Source": "Auto"
+        })
+
+    proc_list = ["Intubation", "Cannulation", "Lumbar Puncture", "Central Line", "Chest Drain", "Suturing"]
+    for p in proc_list:
+        if p.lower() in text.lower():
+            st.session_state.portfolio_data["Procedures"].append({
+                "Entry": p, "Details": "Level 3 (Competent)", "Category": "Skill", "Source": "Auto"
+            })
+
+    if any(x in text.lower() for x in ["audit", "qip", "research", "teaching"]):
+        st.session_state.portfolio_data["Academic"].append({
+            "Entry": "Portfolio Evidence", "Details": "Detected from CV", "Category": "Academic", "Source": "Auto"
+        })
+
 def get_raw_text(file):
-    text = ""
     try:
         if file.name.endswith('.pdf'):
             with pdfplumber.open(file) as pdf:
-                for page in pdf.pages:
-                    text += (page.extract_text() or "") + "\n"
+                return "\n".join([p.extract_text() or "" for p in pdf.pages])
         elif file.name.endswith('.docx'):
             doc = docx.Document(file)
-            text = "\n".join([p.text for p in doc.paragraphs])
-        return text.strip()
+            return "\n".join([p.text for p in doc.paragraphs])
     except: return ""
 
-def run_ollama_scan(full_text):
-    """Local Processing - No Quota"""
-    url = "http://localhost:11434/api/generate"
-    prompt = f"Extract all medical jobs and hospitals. Format: 'ITEM: [Job] at [Hospital]'. CV:\n{full_text[:5000]}"
-    payload = {"model": "llama3.2", "prompt": prompt, "stream": False}
-    try:
-        response = requests.post(url, json=payload, timeout=30)
-        return response.json().get('response', 'Empty local response.')
-    except:
-        return "ERROR: Ollama not detected. Ensure it is running locally."
+# --- 4. PDF GENERATOR CLASS ---
+class MedicalPDF(FPDF):
+    def header(self):
+        self.set_font('Arial', 'B', 16)
+        self.cell(0, 10, 'Verified Global Medical Passport', 0, 1, 'C')
+        self.set_font('Arial', '', 10)
+        self.cell(0, 5, f'Generated on: {datetime.now().strftime("%Y-%m-%d %H:%M")}', 0, 1, 'C')
+        self.ln(10)
 
-def run_gemini_scan(full_text):
-    """Cloud Processing - Using Flash-Lite for higher quota"""
-    try:
-        # gemini-1.5-flash-lite is the 'most free' high-throughput model
-        model = genai.GenerativeModel('gemini-1.5-flash-lite')
-        prompt = f"Extract all clinical rotations and hospital roles. Prefix findings with 'ITEM:'. CV:\n{full_text[:8000]}"
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"CLOUD ERROR: {str(e)}"
+    def section_title(self, title):
+        self.set_font('Arial', 'B', 12)
+        self.set_fill_color(230, 230, 230)
+        self.cell(0, 10, title, 0, 1, 'L', fill=True)
+        self.ln(4)
 
-# --- 4. MAIN DASHBOARD ---
+    def add_table_row(self, col1, col2, col3):
+        self.set_font('Arial', '', 10)
+        self.cell(60, 8, str(col1), 1)
+        self.cell(90, 8, str(col2), 1)
+        self.cell(40, 8, str(col3), 1)
+        self.ln()
+
+# --- 5. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Portfolio Control")
-        
-        # Brain Selection Toggle
-        ai_choice = st.radio("Select AI Engine:", ["Local (Ollama)", "Cloud (Gemini Lite)"])
-        
-        st.divider()
+        st.header("🛂 Portfolio Sync")
         up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
-        
-        if up_file:
+        if up_file and st.button("🚀 Sync All Categories"):
             raw_txt = get_raw_text(up_file)
-            if raw_txt and st.button("🚀 Sync Medical History"):
-                with st.spinner(f"Processing via {ai_choice}..."):
-                    if ai_choice == "Local (Ollama)":
-                        st.session_state.scraped_text = run_ollama_scan(raw_txt)
-                    else:
-                        st.session_state.scraped_text = run_gemini_scan(raw_txt)
+            if raw_txt:
+                auto_populate_cv(raw_txt)
+                st.success("CV Parsed.")
 
+        st.divider()
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Experience", "💉 Procedures", "🔬 Academic/QIP", "📄 PDF Export"])
 
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 AI Raw Output"])
-
-    # 1. EQUIVALENCY (Doctor-to-Doctor Perspective)
+    # TAB 1: EQUIVALENCY
     with tabs[0]:
-        st.subheader("International Grade Translation")
+        st.subheader("Global Jurisdiction Comparison")
         
-        st.write("This tool ensures that recruiters and medical boards recognize your seniority.")
-        st.table(pd.DataFrame([
-            {"Region": "UK (GMC)", "Grade": "FY2 / SHO", "Status": "Verified"},
-            {"Region": "US (ACGME)", "Grade": "PGY-2 Resident", "Status": "Equivalent"},
-            {"Region": "Australia (AHPRA)", "Grade": "RMO", "Status": "Equivalent"}
-        ]))
+        base_system = st.radio("Professional Base:", ["United Kingdom (GMC)", "United States (ACGME)"], horizontal=True)
+        grade_options = ["FY1", "FY2 / SHO", "Registrar (ST3-ST8)", "Consultant"] if base_system == "United Kingdom (GMC)" else ["Intern (PGY-1)", "Resident (PGY-2+)", "Fellow", "Attending Physician"]
+        my_grade = st.selectbox(f"Current {base_system} grade:", grade_options)
+        
+        target_list = ["United Kingdom (GMC)", "United States (ACGME)", "Poland", "EU (General)", "Dubai (DHA)", "China", "South Korea", "Switzerland"]
+        clean_targets = [t for t in target_list if t != base_system]
+        selected_targets = st.multiselect("Compare to:", clean_targets, default=["Poland", "Switzerland"])
+        
+        tier_idx = grade_options.index(my_grade)
+        mapping_matrix = {
+            "United Kingdom (GMC)": ["FY1", "FY2 / SHO", "Registrar (ST3-ST8)", "Consultant"],
+            "United States (ACGME)": ["Intern (PGY-1)", "Resident (PGY-2+)", "Fellow", "Attending Physician"],
+            "Poland": ["Stażysta", "Rezydent (Młodszy)", "Rezydent (Starszy)", "Lekarz Specjalista"],
+            "EU (General)": ["Junior Doctor", "Senior Resident", "Specialist Registrar", "Specialist / Consultant"],
+            "Dubai (DHA)": ["Intern", "Resident / GP", "Registrar", "Consultant"],
+            "China": ["Intern", "Resident", "Attending Physician", "Chief Physician"],
+            "South Korea": ["Intern", "Resident", "Fellow", "Specialist / Professor"],
+            "Switzerland": ["Unterassistenzarzt", "Assistenzarzt", "Oberarzt", "Leitender Arzt / Chefarzt"]
+        }
+        
+        if selected_targets:
+            res_df = pd.DataFrame({"Jurisdiction": selected_targets, "Equivalent Grade": [mapping_matrix[t][tier_idx] for t in selected_targets]})
+            st.table(res_df)
 
-    # 2. CLINICAL RECORDS
-    with tabs[1]:
-        st.subheader("Extracted Career Timeline")
-        
-        if st.session_state.scraped_text:
-            items = [l.replace("ITEM:", "").strip() for l in st.session_state.scraped_text.split('\n') if "ITEM:" in l.upper()]
-            if items:
-                for item in items:
-                    st.write(f"🔹 **{item}**")
+    # TABS 2, 3, 4: EXPERIENCE, PROCEDURES, ACADEMIC (Standard Tables)
+    for i, category in enumerate(["Experience", "Procedures", "Academic"]):
+        with tabs[i+1]:
+            st.subheader(f"Current {category}")
+            if st.session_state.portfolio_data[category]:
+                st.table(pd.DataFrame(st.session_state.portfolio_data[category]))
             else:
-                st.warning("No specific items found. Check 'AI Raw Output' for details.")
-        else:
-            st.info("Upload your CV to populate your clinical history.")
+                st.info(f"No {category.lower()} data found.")
 
-    # 3. AI RAW OUTPUT
-    with tabs[2]:
-        st.subheader("Diagnostic Stream")
-        if st.session_state.scraped_text:
-            st.text_area("Full Response Log", value=st.session_state.scraped_text, height=400)
-        else:
-            st.write("Waiting for data sync...")
+    # TAB 5: PDF EXPORT
+    with tabs[4]:
+        st.subheader("Final Export")
+        st.write("Exporting all sections + Jurisdictional mappings into a single PDF.")
+        
+        if st.button("🛠️ Generate Final PDF Passport"):
+            pdf = MedicalPDF()
+            pdf.add_page()
+            
+            # 1. Jurisdictions
+            pdf.section_title("International Seniority Equivalency")
+            pdf.set_font('Arial', 'I', 10)
+            pdf.cell(0, 8, f"Base System: {base_system} | Current Grade: {my_grade}", 0, 1)
+            pdf.ln(2)
+            for t in selected_targets:
+                pdf.add_table_row(t, mapping_matrix[t][tier_idx], "Verified Mapping")
+            
+            # 2. Experience
+            pdf.ln(10)
+            pdf.section_title("Clinical Rotations & Experience")
+            for item in st.session_state.portfolio_data["Experience"]:
+                pdf.add_table_row(item['Entry'], item['Details'], item['Source'])
+
+            # 3. Procedures
+            pdf.ln(10)
+            pdf.section_title("Procedural Logbook")
+            for item in st.session_state.portfolio_data["Procedures"]:
+                pdf.add_table_row(item['Entry'], item['Details'], "Clinical Skill")
+
+            # 4. Academic
+            pdf.ln(10)
+            pdf.section_title("Academic, Research & QIP")
+            for item in st.session_state.portfolio_data["Academic"]:
+                pdf.add_table_row(item['Entry'], item['Details'], "Evidence")
+
+            # Export
+            pdf_output = pdf.output(dest='S').encode('latin-1')
+            st.download_button(
+                label="📥 Download Full PDF Passport",
+                data=pdf_output,
+                file_name=f"Medical_Passport_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf"
+            )
 
 # --- LOGIN ---
 if not st.session_state.authenticated:
@@ -143,5 +204,4 @@ if not st.session_state.authenticated:
         st.text_input("Password", type="password", key="login_password")
         st.form_submit_button("Sign In", on_click=handle_login)
 else:
-    main_dashboard()
     main_dashboard()

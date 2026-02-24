@@ -4,7 +4,6 @@ from supabase import create_client
 import pdfplumber
 import docx
 import re
-from io import BytesIO
 
 # --- 1. CORE CONFIG ---
 st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
@@ -18,7 +17,7 @@ except Exception as e:
     st.error(f"Configuration Error: {e}")
 
 # --- 2. SESSION STATE ---
-# Initializing with empty lists to prevent DataFrame errors (Lines 127/184)
+# Initializing with explicit keys to prevent Line 134/197 errors
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'portfolio_data' not in st.session_state:
@@ -41,7 +40,7 @@ def handle_login():
 
 # --- 3. AUTO-POPULATION LOGIC ---
 def auto_populate_cv(text):
-    """Rule-based extraction for roles, hospitals, and academic work."""
+    """Rule-based extraction for clinical markers."""
     # Clinical History
     exp_pattern = r"\b(SHO|Registrar|Resident|Fellow|Consultant|Intern|Lekarz|Rezydent|Medical Officer)\b"
     hosp_pattern = r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*\s(?:Hospital|Medical Center|Clinic|Trust|Infirmary))"
@@ -50,9 +49,10 @@ def auto_populate_cv(text):
     found_hosps = re.findall(hosp_pattern, text)
     
     for i in range(min(len(found_roles), len(found_hosps))):
+        # We use consistent keys: 'Entry', 'Details', 'Source'
         st.session_state.portfolio_data["Experience"].append({
-            "Role": found_roles[i].upper(), 
-            "Location": found_hosps[i], 
+            "Role/Entry": found_roles[i].upper(), 
+            "Institution/Details": found_hosps[i], 
             "Source": "Auto-Detected"
         })
 
@@ -61,16 +61,16 @@ def auto_populate_cv(text):
     for p in proc_list:
         if p.lower() in text.lower():
             st.session_state.portfolio_data["Procedures"].append({
-                "Procedure": p, 
-                "Level": "Level 3 (Independent)",
+                "Procedure/Entry": p, 
+                "Competency/Details": "Level 3 (Supervised)",
                 "Source": "Auto-Detected"
             })
 
     # Academic / Audit
     if any(x in text.lower() for x in ["audit", "qip", "quality improvement"]):
         st.session_state.portfolio_data["Academic"].append({
-            "Type": "Audit/QIP", 
-            "Title": "Detected Project", 
+            "Type/Entry": "Audit/QIP", 
+            "Title/Details": "Detected Project", 
             "Source": "Auto-Detected"
         })
 
@@ -121,16 +121,19 @@ def main_dashboard():
         eq_df = pd.DataFrame({"Global Tier": base, f"{target_country} Equivalent": mapping[target_country]})
         st.table(eq_df)
 
-    # TAB 2: EXPERIENCE (Line 127 Fix)
+    # TAB 2: EXPERIENCE (Line 134 Fix)
     with tabs[1]:
         st.subheader("Clinical Rotations")
         with st.expander("➕ Add Manual Entry"):
             with st.form("add_exp"):
                 r = st.text_input("Role")
                 l = st.text_input("Hospital")
-                if st.form_submit_button("Save"):
-                    st.session_state.portfolio_data["Experience"].append({"Role": r, "Location": l, "Source": "Manual"})
+                if st.form_submit_button("Save Entry"):
+                    st.session_state.portfolio_data["Experience"].append({
+                        "Role/Entry": r, "Institution/Details": l, "Source": "Manual"
+                    })
         
+        # Check if list is not empty AND is a list of dicts
         if st.session_state.portfolio_data["Experience"]:
             st.table(pd.DataFrame(st.session_state.portfolio_data["Experience"]))
         else:
@@ -142,49 +145,56 @@ def main_dashboard():
         
         with st.expander("➕ Log Manual Procedure"):
             with st.form("add_proc"):
-                p_name = st.text_input("Procedure")
-                p_lvl = st.selectbox("Level", ["Level 1 (Observed)", "Level 2 (Supervised)", "Level 3 (Independent)"])
-                if st.form_submit_button("Log"):
-                    st.session_state.portfolio_data["Procedures"].append({"Procedure": p_name, "Level": p_lvl, "Source": "Manual"})
+                p_name = st.text_input("Procedure Name")
+                p_lvl = st.selectbox("Competency Level", ["Level 1 (Observed)", "Level 2 (Supervised)", "Level 3 (Independent)"])
+                if st.form_submit_button("Log Procedure"):
+                    st.session_state.portfolio_data["Procedures"].append({
+                        "Procedure/Entry": p_name, "Competency/Details": p_lvl, "Source": "Manual"
+                    })
         
         if st.session_state.portfolio_data["Procedures"]:
             st.table(pd.DataFrame(st.session_state.portfolio_data["Procedures"]))
+        else:
+            st.info("No procedures logged.")
 
-    # TAB 4: ACADEMIC (Line 184 Fix)
+    # TAB 4: ACADEMIC (Line 197 Fix)
     with tabs[3]:
         st.subheader("Audits, Teaching & Research")
         
         with st.expander("➕ Add Academic Entry"):
             with st.form("add_acad"):
                 a_type = st.selectbox("Type", ["Audit/QIP", "Teaching", "Research", "Publication"])
-                a_title = st.text_input("Title")
-                if st.form_submit_button("Add Entry"):
-                    st.session_state.portfolio_data["Academic"].append({"Type": a_type, "Title": a_title, "Source": "Manual"})
+                a_title = st.text_input("Title/Description")
+                if st.form_submit_button("Add to Passport"):
+                    st.session_state.portfolio_data["Academic"].append({
+                        "Type/Entry": a_type, "Title/Details": a_title, "Source": "Manual"
+                    })
         
         if st.session_state.portfolio_data["Academic"]:
             st.table(pd.DataFrame(st.session_state.portfolio_data["Academic"]))
+        else:
+            st.info("No academic entries found.")
 
     # TAB 5: EXPORT
     with tabs[4]:
         st.subheader("Jurisdictional Export")
         st.write("Choose jurisdictions to include in your verified summary:")
-        col1, col2 = st.columns(2)
-        with col1:
-            inc_uk = st.checkbox("Include UK (GMC) Standards", value=True)
-            inc_us = st.checkbox("Include US (ACGME) Standards")
-        with col2:
-            inc_au = st.checkbox("Include Australia (AMC) Standards")
-            inc_pl = st.checkbox("Include Poland (NIL) Standards")
+        
+        inc_uk = st.checkbox("Include UK (GMC) Equivalency Standards", value=True)
+        inc_au = st.checkbox("Include Australia (AMC) Equivalency Standards")
 
         if st.button("🛠️ Generate Medical Passport"):
-            # Create summary dataframe for export
-            export_list = st.session_state.portfolio_data["Experience"]
-            if export_list:
-                df_export = pd.DataFrame(export_list)
+            all_entries = []
+            for category in st.session_state.portfolio_data.values():
+                all_entries.extend(category)
+            
+            if all_entries:
+                df_export = pd.DataFrame(all_entries)
                 csv = df_export.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Verified Passport (CSV)", data=csv, file_name="Medical_Passport_Export.csv")
+                st.download_button("📥 Download Verified Passport (CSV)", data=csv, file_name="Medical_Passport.csv")
+                st.success("Passport generation complete.")
             else:
-                st.error("No data available to export.")
+                st.error("No data found to export. Please upload a CV or enter data manually.")
 
 # --- LOGIN ---
 if not st.session_state.authenticated:

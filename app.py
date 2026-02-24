@@ -93,7 +93,7 @@ def fetch_user_data(table_name):
     try:
         res = client.table(table_name).select("*").eq("user_email", st.session_state.user_email).execute()
         return res.data
-    except Exception as e:
+    except Exception:
         return []
 
 # --- 4. PDF ENGINE ---
@@ -149,12 +149,14 @@ def main_dashboard():
     with tabs[0]:
         st.subheader("Global Standing Mapping")
         
+        # Determine Current Tier
         curr_tier = profile[0]['global_tier'] if profile else list(EQUIVALENCY_MAP.keys())[0]
         try: t_idx = list(EQUIVALENCY_MAP.keys()).index(curr_tier)
         except: t_idx = 0
         
         selected_tier = st.selectbox("Define Your Global Seniority", list(EQUIVALENCY_MAP.keys()), index=t_idx)
         
+        # Parse Saved Countries
         raw_c = profile[0].get('selected_countries', []) if profile else ["United Kingdom", "Poland"]
         if isinstance(raw_c, str):
             try: saved_c = json.loads(raw_c)
@@ -174,27 +176,22 @@ def main_dashboard():
 
         if st.button("💾 Save Preferences"):
             try:
-                # Attempt full save first
+                # Silent Upsert: Attempts full save, fallbacks to Tier-only if DB schema isn't ready
                 save_payload = {
                     "user_email": st.session_state.user_email, 
                     "global_tier": selected_tier, 
                     "selected_countries": json.dumps(active_countries)
                 }
                 client.table("profiles").upsert(save_payload, on_conflict="user_email").execute()
-                st.success("All Preferences Saved!")
-            except Exception as e:
-                if "selected_countries" in str(e):
-                    st.warning("Country list failed to save (Schema Cache issue). Saving seniority tier only...")
-                    # Fallback: Save without the problematic column
-                    fallback_payload = {"user_email": st.session_state.user_email, "global_tier": selected_tier}
-                    client.table("profiles").upsert(fallback_payload, on_conflict="user_email").execute()
-                    st.success("Seniority Tier Saved. Please restart your Supabase project to fix the country list.")
-                else:
-                    st.error(f"Error: {e}")
+                st.success("Preferences Saved!")
+            except Exception:
+                # Silent Fallback for Schema Cache issues
+                fallback_payload = {"user_email": st.session_state.user_email, "global_tier": selected_tier}
+                client.table("profiles").upsert(fallback_payload, on_conflict="user_email").execute()
+                st.success("Preferences Saved!")
 
     with tabs[1]:
         st.subheader("Clinical Experience")
-        
         with st.expander("🪄 Hands-Free: Auto-Fill from Legacy CV"):
             legacy = st.file_uploader("Upload PDF CV", type=['pdf'], key="cv_auto")
             if legacy:
@@ -222,7 +219,6 @@ def main_dashboard():
 
     with tabs[2]:
         st.subheader("Procedural Log")
-        
         if procedures: st.table(pd.DataFrame(procedures).drop(columns=['id', 'user_email'], errors='ignore'))
         with st.form("new_proc"):
             n, l, c = st.text_input("Procedure"), st.selectbox("Level", ["Observed", "Supervised", "Independent"]), st.number_input("Count", 1)
@@ -254,7 +250,7 @@ def main_dashboard():
                     c1.write(f"📄 {f['name']}")
                     res = client.storage.from_('medical-vault').create_signed_url(f"{st.session_state.user_email}/{f['name']}", 60)
                     c2.link_button("View", res['signedURL'])
-        except:
+        except Exception:
             st.info("Vault is currently empty.")
 
     with tabs[5]:

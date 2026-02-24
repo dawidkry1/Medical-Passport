@@ -4,9 +4,11 @@ from supabase import create_client
 import google.generativeai as genai
 import pdfplumber
 import docx
+import requests
+import time
 
 # --- 1. CORE CONFIG ---
-st.set_page_config(page_title="Medical Passport Cloud", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="Global Medical Passport", page_icon="🏥", layout="wide")
 
 # Connection Setup
 try:
@@ -16,29 +18,27 @@ try:
     
     if "GEMINI_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    else:
-        st.error("⚠️ GEMINI_API_KEY missing in secrets.")
 except Exception as e:
     st.error(f"Initialization Error: {e}")
 
 # --- 2. SESSION STATE ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = None
 if 'scraped_text' not in st.session_state:
     st.session_state.scraped_text = ""
 
 def handle_login():
     try:
-        res = supabase_client.auth.sign_in_with_password({
-            "email": st.session_state.login_email, 
-            "password": st.session_state.login_password
-        })
+        res = supabase_client.auth.sign_in_with_password({"email": st.session_state.login_email, "password": st.session_state.login_password})
         if res.user:
             st.session_state.authenticated = True
+            st.session_state.user_email = res.user.email
     except Exception as e:
         st.error(f"Login failed: {e}")
 
-# --- 3. EXTRACTION ENGINE ---
+# --- 3. THE AI ENGINES ---
 def get_raw_text(file):
     text = ""
     try:
@@ -52,51 +52,46 @@ def get_raw_text(file):
         return text.strip()
     except: return ""
 
-def run_gemini_scan(full_text):
-    # Try the new stable 2.0 Lite first, fall back to 1.5 Flash (not lite) if needed
-    model_names = ['gemini-2.0-flash-lite', 'gemini-1.5-flash']
-    
-    prompt = (
-        "You are an expert medical recruiter. Extract clinical roles, hospital names, "
-        "and specific procedures from this CV. Format each as: 'ITEM: [Role] at [Hospital]'. "
-        f"\n\nCV DATA:\n{full_text[:8000]}"
-    )
+def run_ollama_scan(full_text):
+    """Local Processing - No Quota"""
+    url = "http://localhost:11434/api/generate"
+    prompt = f"Extract all medical jobs and hospitals. Format: 'ITEM: [Job] at [Hospital]'. CV:\n{full_text[:5000]}"
+    payload = {"model": "llama3.2", "prompt": prompt, "stream": False}
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        return response.json().get('response', 'Empty local response.')
+    except:
+        return "ERROR: Ollama not detected. Ensure it is running locally."
 
-    for m_name in model_names:
-        try:
-            model = genai.GenerativeModel(m_name)
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            if "404" in str(e):
-                continue
-            return f"API ERROR: {str(e)}"
-    
-    return "CRITICAL ERROR: No compatible Gemini models found for your API key."
+def run_gemini_scan(full_text):
+    """Cloud Processing - Using Flash-Lite for higher quota"""
+    try:
+        # gemini-1.5-flash-lite is the 'most free' high-throughput model
+        model = genai.GenerativeModel('gemini-1.5-flash-lite')
+        prompt = f"Extract all clinical rotations and hospital roles. Prefix findings with 'ITEM:'. CV:\n{full_text[:8000]}"
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"CLOUD ERROR: {str(e)}"
 
 # --- 4. MAIN DASHBOARD ---
 def main_dashboard():
     with st.sidebar:
-        st.header("🛂 Clinical Portfolio")
+        st.header("🛂 Portfolio Control")
         
-        # DEBUG: Find out what models YOUR key actually has
-        if st.button("🔍 Scan My Available Models"):
-            try:
-                models = [m.name for m in genai.list_models()]
-                st.write("Your key sees these models:")
-                st.json(models)
-            except Exception as e:
-                st.error(f"Could not list models: {e}")
-
+        # Brain Selection Toggle
+        ai_choice = st.radio("Select AI Engine:", ["Local (Ollama)", "Cloud (Gemini Lite)"])
+        
         st.divider()
-        up_file = st.file_uploader("Upload CV (PDF/DOCX)", type=['pdf', 'docx'])
+        up_file = st.file_uploader("Upload Medical CV", type=['pdf', 'docx'])
         
         if up_file:
             raw_txt = get_raw_text(up_file)
-            if raw_txt:
-                st.info(f"Loaded {len(raw_txt)} characters.")
-                if st.button("🚀 Sync Clinical Data"):
-                    with st.spinner("Analyzing Medical History..."):
+            if raw_txt and st.button("🚀 Sync Medical History"):
+                with st.spinner(f"Processing via {ai_choice}..."):
+                    if ai_choice == "Local (Ollama)":
+                        st.session_state.scraped_text = run_ollama_scan(raw_txt)
+                    else:
                         st.session_state.scraped_text = run_gemini_scan(raw_txt)
 
         if st.button("🚪 Logout", use_container_width=True):
@@ -104,43 +99,43 @@ def main_dashboard():
             st.rerun()
 
     st.title("🩺 Global Medical Passport")
-    
-    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 System Log"])
+
+    tabs = st.tabs(["🌐 Equivalency", "🏥 Clinical Records", "🔬 AI Raw Output"])
 
     # 1. EQUIVALENCY (Doctor-to-Doctor Perspective)
     with tabs[0]:
-        st.subheader("International Seniority Translation")
+        st.subheader("International Grade Translation")
         
-        st.write("Translating your domestic grade into international standards.")
+        st.write("This tool ensures that recruiters and medical boards recognize your seniority.")
         st.table(pd.DataFrame([
-            {"Region": "United Kingdom", "Equivalent Grade": "Foundation Year 2 / SHO"},
-            {"Region": "United States", "Equivalent Grade": "PGY-2 Resident"},
-            {"Region": "Australia", "Equivalent Grade": "Resident Medical Officer (RMO)"}
+            {"Region": "UK (GMC)", "Grade": "FY2 / SHO", "Status": "Verified"},
+            {"Region": "US (ACGME)", "Grade": "PGY-2 Resident", "Status": "Equivalent"},
+            {"Region": "Australia (AHPRA)", "Grade": "RMO", "Status": "Equivalent"}
         ]))
 
     # 2. CLINICAL RECORDS
     with tabs[1]:
-        st.subheader("Verified Clinical History")
+        st.subheader("Extracted Career Timeline")
         
         if st.session_state.scraped_text:
             items = [l.replace("ITEM:", "").strip() for l in st.session_state.scraped_text.split('\n') if "ITEM:" in l.upper()]
             if items:
                 for item in items:
-                    st.write(f"✅ **{item}**")
+                    st.write(f"🔹 **{item}**")
             else:
-                st.warning("Analysis complete, but no roles were identified. Check System Log.")
+                st.warning("No specific items found. Check 'AI Raw Output' for details.")
         else:
-            st.info("Please upload your CV to extract your clinical history.")
+            st.info("Upload your CV to populate your clinical history.")
 
-    # 3. SYSTEM LOG
+    # 3. AI RAW OUTPUT
     with tabs[2]:
-        st.subheader("Raw AI Response")
+        st.subheader("Diagnostic Stream")
         if st.session_state.scraped_text:
-            st.text_area("Response Text:", value=st.session_state.scraped_text, height=400)
+            st.text_area("Full Response Log", value=st.session_state.scraped_text, height=400)
         else:
-            st.write("No data processed yet.")
+            st.write("Waiting for data sync...")
 
-# --- LOGIN GATE ---
+# --- LOGIN ---
 if not st.session_state.authenticated:
     st.title("🏥 Medical Gateway")
     with st.form("login"):
@@ -148,4 +143,5 @@ if not st.session_state.authenticated:
         st.text_input("Password", type="password", key="login_password")
         st.form_submit_button("Sign In", on_click=handle_login)
 else:
+    main_dashboard()
     main_dashboard()
